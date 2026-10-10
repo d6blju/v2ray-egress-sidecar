@@ -1,0 +1,12 @@
+[package]
+name = "v2ray-egress-sidecar"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+license = "MIT"
+description = "A SOCKS5 egress sidecar for V2Ray/Xray with traffic stats, hot-reload routing, and VPN exit selection."
+repository = "https://github.com/d6blju/v2ray-egress-sidecar"
+keywords = ["v2ray", "xray", "socks5", "proxy", "vpn"]
+categories = ["network-programming"]
+
+[dependencies]

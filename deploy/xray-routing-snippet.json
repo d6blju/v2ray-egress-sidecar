@@ -1,0 +1,8 @@
+{
+  "type": "field",
+  "outboundTag": "egress-sidecar",
+  "domain": [
+    "geosite:netflix",
+    "domain:abema.tv"
+  ]
+}

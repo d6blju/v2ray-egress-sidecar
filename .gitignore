@@ -1,0 +1,11 @@
+/target/
+*.exe
+*.pdb
+*.rlib
+*.profraw
+*.log
+*.tmp
+*.bak
+config.local.toml
+remote-config.toml
+*.env
