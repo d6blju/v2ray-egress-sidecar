@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh V2Ray egress sidecar stats dashboard
+
+[Timer]
+OnBootSec=5s
+OnUnitActiveSec=15s
+AccuracySec=2s
+Unit=v2ray-egress-sidecar-dashboard-render.service
+
+[Install]
+WantedBy=timers.target

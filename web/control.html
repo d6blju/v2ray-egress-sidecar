@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V2Ray Egress Sidecar Routing</title>
+<style>
+:root{color-scheme:light;--bg:#f7f8f4;--panel:#fff;--text:#1d252c;--muted:#68717a;--line:#d9ded6;--accent:#0f766e;--bad:#b42318}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+header{border-bottom:1px solid var(--line);background:#ffffffd9;position:sticky;top:0;backdrop-filter:saturate(140%) blur(8px);z-index:2}.wrap{max-width:1180px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0}.sub{color:var(--muted);font-size:12px;margin-top:4px}.nav{display:flex;gap:8px;margin-top:12px}.nav a{border:1px solid var(--line);background:#fff;color:var(--text);padding:7px 10px;border-radius:6px;text-decoration:none}.nav a.active{border-color:var(--accent);color:#fff;background:var(--accent)}
+.grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(320px,.9fr);gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;min-width:0}.row{display:grid;gap:6px;margin-bottom:12px}label{font-weight:600;font-size:12px;color:var(--muted)}select,textarea,input{width:100%;border:1px solid var(--line);border-radius:6px;padding:9px;background:#fff;color:var(--text);font:inherit}textarea{min-height:178px;resize:vertical}.country-picker{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,.75fr);gap:8px}.hint{color:var(--muted);font-size:12px}.checks{display:flex;gap:14px;flex-wrap:wrap}.checks label{font-weight:500;color:var(--text)}.checks input{width:auto;margin-right:6px}
+button{border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;padding:9px 12px;cursor:pointer;font-weight:650}button.secondary{background:#fff;color:var(--text);border-color:var(--line)}button.danger{border-color:var(--bad);background:#fff;color:var(--bad)}button:disabled{opacity:.55;cursor:not-allowed}.actions{display:flex;gap:8px;flex-wrap:wrap}
+.status{white-space:pre-wrap;border:1px solid var(--line);border-radius:8px;background:#fbfcfa;padding:12px;min-height:110px}.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:999px;padding:5px 8px;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}.chip:hover{border-color:var(--accent);color:var(--accent);background:#f3fbf9}.chip:active{background:#e6f5f2}.muted{color:var(--muted)}.bad{color:var(--bad)}
+@media(max-width:900px){.grid{grid-template-columns:1fr}.country-picker{grid-template-columns:1fr}.wrap{padding:12px}}
+</style>
+</head>
+<body>
+<header><div class="wrap"><h1>V2Ray Egress Sidecar Routing</h1><div id="meta" class="sub">Loading...</div><div class="nav"><a href="./">Stats</a><a class="active" href="control.html">Routing</a></div></div></header>
+<main class="wrap">
+<section class="grid">
+<div class="panel">
+  <div class="row"><label for="profile">Site / app profile</label><select id="profile"></select></div>
+  <div class="row"><label for="country-search">NordVPN country / 国家</label><div class="country-picker"><input id="country-search" placeholder="输入中文、英文或代码，例如：孟 / bang / bd"><select id="country"></select></div><div id="country-hint" class="hint"></div></div>
+  <div class="row"><label for="domains">Domain suffixes routed to selected country</label><textarea id="domains" spellcheck="false"></textarea></div>
+  <div class="checks">
+    <label><input type="checkbox" id="include-ip" checked>Route ip.sb with this rule</label>
+    <label><input type="checkbox" id="openvpn-tcp">Use OpenVPN TCP</label>
+  </div>
+  <div class="actions" style="margin-top:14px">
+    <button id="apply">Apply Route</button>
+    <button id="check" class="secondary">Check ip.sb</button>
+    <button id="clear" class="danger">Clear UI Rules</button>
+  </div>
+</div>
+<div class="panel">
+  <div class="row"><label>Current UI-managed route</label><div id="current" class="status">Loading...</div></div>
+  <div class="row"><label>Result</label><div id="result" class="status">Idle</div></div>
+</div>
+</section>
+<section class="panel" style="margin-top:16px">
+  <div class="row"><label>Observed recent domains</label><div id="observed" class="chips"><span class="muted">Loading...</span></div></div>
+</section>
+</main>
+<script>
+let state=null, stats=null;
+const $=id=>document.getElementById(id);
+const basePath=location.pathname.includes('/sidecar-stats/')?'/sidecar-stats/':'./';
+const regionNames=(typeof Intl!=='undefined'&&Intl.DisplayNames)?new Intl.DisplayNames(['zh-CN'],{type:'region'}):null;
+let allCountryOptions=[];
+function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function url(path){return basePath+path.replace(/^\/+/,'')}
+async function fetchJson(path, options){
+ const res=await fetch(url(path),options||{});
+ const text=await res.text();
+ let data=null;
+ try{data=text?JSON.parse(text):null}catch(e){
+  const preview=text.replace(/\s+/g,' ').slice(0,180);
+  throw new Error(`API returned non-JSON HTTP ${res.status}: ${preview}`);
+ }
+ if(!res.ok||!data||data.ok===false)throw new Error((data&&data.error)||`HTTP ${res.status}`);
+ return data;
+}
+function setResult(text,bad=false){$('result').className='status '+(bad?'bad':'');$('result').textContent=text}
+function domainsFromText(){return $('domains').value.split(/[\s,;]+/).map(x=>x.trim()).filter(Boolean)}
+function putDomains(domains){$('domains').value=(domains||[]).join('\n')}
+function profileById(id){return (state.profiles||[]).find(p=>p.id===id)}
+function countryOptions(){return (state.country_options||state.countries||[]).map(c=>typeof c==='string'?{name:c,code:''}:c)}
+function countryLabel(country){
+ const c=typeof country==='string'?(countryOptions().find(x=>x.name===country)||{name:country,code:''}):country;
+ if(c&&c.code&&regionNames){
+  try{const zh=regionNames.of(c.code);if(zh&&zh!==c.code)return zh}catch(e){}
+ }
+ return (c&&c.name)||String(country||'');
+}
+function countrySearchText(c){return `${countryLabel(c)} ${c.name||''} ${c.code||''}`.toLowerCase()}
+function renderCountryOptions(keepValue){
+ const query=($('country-search').value||'').trim().toLowerCase();
+ let options=allCountryOptions;
+ if(query)options=options.filter(c=>countrySearchText(c).includes(query));
+ const keep=keepValue||$('country').value;
+ $('country').innerHTML=options.map(c=>`<option value="${esc(c.name)}" title="${esc(c.name)}">${esc(countryLabel(c))}</option>`).join('');
+ if(keep&&options.some(c=>c.name===keep))$('country').value=keep;
+ if(!$('country').value&&options.length)$('country').value=options[0].name;
+ $('country-hint').textContent=query?`匹配 ${options.length} / ${allCountryOptions.length} 个国家`:`共 ${allCountryOptions.length} 个国家；可输入“孟”“日本”“us”等过滤`;
+}
+function updateCountryHint(){
+ const c=allCountryOptions.find(x=>x.name===$('country').value);
+ if(c&&!($('country-search').value||'').trim())$('country-hint').textContent=`已选择：${countryLabel(c)} / ${c.name}`;
+}
+function renderCurrent(){
+ const s=state.state||{};
+ const lines=[];
+ lines.push(`active: ${s.active?'yes':'no'}`);
+ if(s.country)lines.push(`country: ${countryLabel(s.country)}`);
+ if(s.profile)lines.push(`profile: ${s.profile}`);
+ if(s.proxy)lines.push(`proxy: ${s.proxy}`);
+ if(s.gluetun)lines.push(`gluetun: ${s.gluetun.status||'?'} / ${s.gluetun.health||'?'}`);
+ if(s.domains&&s.domains.length)lines.push(`domains:\n  ${s.domains.join('\n  ')}`);
+ $('current').textContent=lines.join('\n');
+}
+function renderState(){
+ allCountryOptions=countryOptions().sort((a,b)=>countryLabel(a).localeCompare(countryLabel(b),'zh-CN'));
+ $('meta').textContent=`已加载 ${allCountryOptions.length} 个 NordVPN 国家`;
+ $('profile').innerHTML='<option value="custom">Custom</option>'+state.profiles.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+ const current=state.state||{};
+ const selectedCountry=current.country||($('country').value)||((allCountryOptions[0]||{}).name);
+ renderCountryOptions(selectedCountry);
+ updateCountryHint();
+ if(current.profile)$('profile').value=current.profile;
+ if(current.domains&&current.domains.length)putDomains(current.domains);
+ else {
+   const p=profileById($('profile').value);
+   if(p)putDomains(p.domains);
+ }
+ $('include-ip').checked=current.include_ip_sb!==false;
+ $('openvpn-tcp').checked=current.protocol==='tcp';
+ renderCurrent();
+}
+function renderObserved(){
+ const rows=((stats&&stats.windows&&stats.windows['1h']&&stats.windows['1h'].domains)||[]).slice(0,40);
+ if(!rows.length){$('observed').innerHTML='<span class="muted">No recent domains</span>';return}
+ $('observed').innerHTML=rows.map(r=>`<button class="chip" data-domain="${esc(r.name)}">${esc(r.name)} · ${esc(r.total_human||'')}</button>`).join('');
+ $('observed').querySelectorAll('button').forEach(btn=>btn.onclick=()=>{
+   const d=btn.dataset.domain;
+   const cur=new Set(domainsFromText());
+   cur.add(d);
+   putDomains([...cur]);
+   $('profile').value='custom';
+ });
+}
+async function load(){
+ const [s,j]=await Promise.all([
+   fetchJson('api/state',{cache:'no-store'}),
+   fetchJson('stats.json?ts='+Date.now(),{cache:'no-store'}).catch(()=>null)
+ ]);
+ state=s; stats=j; renderState(); renderObserved();
+}
+$('profile').onchange=()=>{const p=profileById($('profile').value); if(p)putDomains(p.domains)}
+$('country-search').oninput=()=>renderCountryOptions();
+$('country').onchange=()=>updateCountryHint();
+$('apply').onclick=async()=>{
+ $('apply').disabled=true; setResult('Applying route. Starting or switching Gluetun can take about 1-2 minutes...');
+ try{
+  const body={profile:$('profile').value,country:$('country').value,domains:domainsFromText(),include_ip_sb:$('include-ip').checked,protocol:$('openvpn-tcp').checked?'tcp':'udp'};
+  const data=await fetchJson('api/apply',{method:'POST',headers:{'Content-Type':'application/json','X-Sidecar-Admin':'1'},body:JSON.stringify(body)});
+  state.state=data.state; renderCurrent();
+  setResult(`Applied.\ncountry: ${countryLabel(data.state.country)}\nip.sb via sidecar: ${data.ip_check&&data.ip_check.ok?data.ip_check.ip:JSON.stringify(data.ip_check)}\nbackup: ${data.backup}`);
+ }catch(e){setResult(String(e),true)}
+ finally{$('apply').disabled=false}
+};
+$('clear').onclick=async()=>{
+ if(!confirm('Clear only the UI-managed rules? Existing non-UI rules stay in config.'))return;
+ setResult('Clearing UI-managed rules...');
+ try{
+  const data=await fetchJson('api/clear',{method:'POST',headers:{'Content-Type':'application/json','X-Sidecar-Admin':'1'},body:'{}'});
+  state.state=data.state; renderCurrent(); setResult(`Cleared.\nbackup: ${data.backup}`);
+ }catch(e){setResult(String(e),true)}
+};
+$('check').onclick=async()=>{
+ setResult('Checking api.ip.sb through sidecar SOCKS...');
+ try{
+  const data=await fetchJson('api/ipcheck',{cache:'no-store'});
+  setResult(data.ok?`ip.sb via sidecar: ${data.ip}`:`check failed: ${data.error}`,!data.ok);
+ }catch(e){setResult(String(e),true)}
+};
+load().catch(e=>{setResult(String(e),true);$('meta').textContent='Load failed'});
+</script>
+</body>
+</html>

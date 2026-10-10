@@ -25,6 +25,7 @@
 - 域名规则支持精确匹配、后缀匹配、包含匹配。
 - 支持最大连接数、TCP idle 清理、半关闭清理、UDP idle 清理。
 - 附带 systemd 安装脚本、统计脚本、Gluetun/NordVPN 辅助脚本。
+- 可选 Web 界面，用于查看统计、修改路由、选择 NordVPN 国家、从最近流量里发现域名。
 
 ## 限制
 
@@ -185,6 +186,70 @@ addr = "127.0.0.1:18888"
 ```
 
 切换国家通常是重建同一个本地端口后的 Gluetun 容器；如果 sidecar 里的规则和端口不变，不需要重启 V2Ray/Xray。
+
+## Web 界面
+
+可选 Web 界面分为两部分：
+
+- 统计面板：读取 `stats.jsonl`，生成 `index.html` 和 `stats.json`。
+- 路由控制页：向 `config.toml` 写入 UI 管理的规则块，启动或重建 Gluetun/NordVPN HTTP CONNECT 容器，并通过 `ip.sb` 检查出口 IP。
+
+安装 sidecar 后，再安装界面：
+
+```bash
+sudo ./deploy/install-ui.sh
+```
+
+安装内容：
+
+- 静态文件：`/var/www/v2ray-egress-sidecar-dashboard`
+- 渲染器：`/usr/local/bin/v2ray-egress-dashboard-render`
+- 管理 API：`/usr/local/bin/v2ray-egress-admin-api`
+- 管理状态：`/var/lib/v2ray-egress-sidecar-admin`
+- 服务：
+  - `v2ray-egress-sidecar-dashboard-render.timer`
+  - `v2ray-egress-sidecar-admin-api.service`
+
+管理 API 只监听本机：
+
+```text
+http://127.0.0.1:18082/api/state
+```
+
+用 nginx 暴露界面。可以从示例配置开始：
+
+```bash
+sudo cp /etc/nginx/conf.d/v2ray-egress-sidecar-ui.conf.example /etc/nginx/conf.d/v2ray-egress-sidecar-ui.conf
+sudo htpasswd -c /etc/nginx/.htpasswd-v2ray-egress-sidecar sidecar
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+示例配置会提供本机访问地址：
+
+```text
+http://127.0.0.1:18081/
+```
+
+同时也包含可以复制到现有 HTTPS server block 里的公网路径示例：
+
+```text
+https://your-domain.example/sidecar-stats/
+https://your-domain.example/sidecar-stats/control.html
+```
+
+公网界面和 API 必须加 Basic Auth。不要在无认证的情况下暴露 `/sidecar-stats/api/`。
+
+路由控制页用法：
+
+1. 选择网站/应用 profile，或手动输入域名后缀。
+2. 选择 NordVPN 国家。国家搜索支持中文、英文和国家代码，取决于浏览器是否支持地区名称。
+3. 选择 OpenVPN UDP 或 TCP。
+4. 点击 `Apply Route`。
+5. 点击 `Check ip.sb` 查看当前 sidecar 出口 IP。
+6. 点击 `Clear UI Rules` 只删除 UI 管理的规则，不删除手写规则。
+
+应用或清理 UI 规则不会重启 V2Ray/Xray。sidecar 会通过热加载读取有效配置。切换 Gluetun 国家可能会重建同一 localhost 代理端口背后的 Gluetun 容器。
 
 ## 查看统计
 

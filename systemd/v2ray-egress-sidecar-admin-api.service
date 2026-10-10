@@ -1,0 +1,19 @@
+[Unit]
+Description=V2Ray egress sidecar routing admin API
+After=network-online.target docker.service v2ray-egress-sidecar.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=SIDECAR_CONFIG=/etc/v2ray-egress-sidecar/config.toml
+Environment=SIDECAR_ADMIN_STATE_DIR=/var/lib/v2ray-egress-sidecar-admin
+Environment=SIDECAR_GLUETUN_START=/usr/local/bin/nordvpn-gluetun-start
+Environment=SIDECAR_SOCKS=127.0.0.1:10880
+Environment=SIDECAR_ADMIN_HOST=127.0.0.1
+Environment=SIDECAR_ADMIN_PORT=18082
+ExecStart=/usr/local/bin/v2ray-egress-admin-api
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -27,6 +27,8 @@ It is also not affiliated with the V2Ray or Xray projects.
 - Optional connection limit and TCP/UDP idle cleanup.
 - Helper scripts for systemd installation, stats summaries, and
   Gluetun/NordVPN HTTP CONNECT exits.
+- Optional web UI for stats, route editing, NordVPN country selection, and
+  recent-domain discovery.
 
 ## Limitations
 
@@ -219,6 +221,78 @@ addr = "127.0.0.1:18888"
 Switching country usually means recreating the Gluetun container on the same
 local proxy port. It does not require a V2Ray/Xray restart, and the sidecar only
 needs config hot reload if the outbound tag or rules change.
+
+## Web UI
+
+The optional web UI has two parts:
+
+- Stats dashboard: reads `stats.jsonl` and renders `index.html` plus
+  `stats.json`.
+- Routing control page: edits a managed block in `config.toml`, starts or
+  recreates a Gluetun/NordVPN HTTP CONNECT container, and checks `ip.sb`
+  through the sidecar.
+
+Install the UI after installing the sidecar:
+
+```bash
+sudo ./deploy/install-ui.sh
+```
+
+This installs:
+
+- static files: `/var/www/v2ray-egress-sidecar-dashboard`
+- renderer: `/usr/local/bin/v2ray-egress-dashboard-render`
+- admin API: `/usr/local/bin/v2ray-egress-admin-api`
+- admin state: `/var/lib/v2ray-egress-sidecar-admin`
+- services:
+  - `v2ray-egress-sidecar-dashboard-render.timer`
+  - `v2ray-egress-sidecar-admin-api.service`
+
+The admin API listens on localhost only:
+
+```text
+http://127.0.0.1:18082/api/state
+```
+
+Use nginx to expose it. Start with the example:
+
+```bash
+sudo cp /etc/nginx/conf.d/v2ray-egress-sidecar-ui.conf.example /etc/nginx/conf.d/v2ray-egress-sidecar-ui.conf
+sudo htpasswd -c /etc/nginx/.htpasswd-v2ray-egress-sidecar sidecar
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+The example exposes a local-only dashboard on:
+
+```text
+http://127.0.0.1:18081/
+```
+
+It also includes public-path snippets for your existing HTTPS server:
+
+```text
+https://your-domain.example/sidecar-stats/
+https://your-domain.example/sidecar-stats/control.html
+```
+
+Keep the public UI and API behind Basic Auth. Do not expose
+`/sidecar-stats/api/` without authentication.
+
+Using the routing control page:
+
+1. Choose a site/app profile or enter custom domain suffixes.
+2. Choose a NordVPN country. The country search accepts Chinese names, English
+   names, and country codes when the browser supports region names.
+3. Choose OpenVPN UDP or TCP.
+4. Click `Apply Route`.
+5. Click `Check ip.sb` to see the current sidecar exit IP.
+6. Click `Clear UI Rules` to remove only the UI-managed rules from
+   `config.toml`.
+
+Applying or clearing UI rules does not restart V2Ray/Xray. The sidecar picks up
+valid config changes through hot reload. Changing the Gluetun country may
+recreate the Gluetun container behind the same localhost proxy port.
 
 ## Stats
 
