@@ -2,26 +2,14 @@
 import argparse
 import json
 import os
+import sys
 import tempfile
 import time
 from collections import defaultdict
 
 
-SERVICE_SUFFIXES = [
-    ("x-twitter", ["x.com", "twitter.com", "t.co", "twimg.com", "tweetdeck.com", "pscp.tv", "periscope.tv"]),
-    ("openai-chatgpt", ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com"]),
-    ("claude-anthropic", ["claude.ai", "anthropic.com", "anthropicusercontent.com", "claudeusercontent.com"]),
-    ("youtube", ["youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "ggpht.com", "gvt1.com", "gvt2.com"]),
-    ("netflix", ["netflix.com", "netflix.net", "nflxvideo.net", "nflximg.net", "nflxext.com", "nflxso.net", "nflxsearch.net"]),
-    ("google", ["google.com", "googleapis.com", "gstatic.com"]),
-    ("apple", ["apple.com", "icloud.com", "itunes.apple.com", "push.apple.com"]),
-    ("microsoft", ["microsoft.com", "windows.com", "office.com", "live.com", "bing.com", "msftconnecttest.com"]),
-    ("ip-check", ["ip.sb", "ipinfo.io", "ifconfig.co", "icanhazip.com"]),
-    ("nordvpn", ["nordvpn.com", "nordaccount.com"]),
-    ("cloudflare", ["cloudflare.com", "cloudflare-dns.com"]),
-]
-
-MULTI_PART_PUBLIC_SUFFIXES = {"com.cn", "com.hk", "com.tw", "co.jp", "co.kr", "co.uk", "com.au", "com.br"}
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "v2ray-egress-sidecar"))
+from sidecar_services import service_name
 
 
 def tail_lines(path, max_lines, max_bytes):
@@ -52,27 +40,6 @@ def event_ms(row):
 
 def host_from_row(row):
     return (row.get("target_host") or row.get("domain") or "").lower().strip(".")
-
-
-def root_domain(host):
-    parts = host.split(".")
-    if len(parts) <= 2:
-        return host
-    suffix2 = ".".join(parts[-2:])
-    suffix3 = ".".join(parts[-3:])
-    if suffix2 in MULTI_PART_PUBLIC_SUFFIXES and len(parts) >= 3:
-        return ".".join(parts[-3:])
-    if suffix3 in MULTI_PART_PUBLIC_SUFFIXES and len(parts) >= 4:
-        return ".".join(parts[-4:])
-    return suffix2
-
-
-def service_name(host):
-    for name, suffixes in SERVICE_SUFFIXES:
-        for suffix in suffixes:
-            if host == suffix or host.endswith("." + suffix):
-                return name
-    return root_domain(host) or "(unknown)"
 
 
 def udp_class(row):

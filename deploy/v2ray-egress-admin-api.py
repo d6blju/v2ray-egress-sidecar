@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -32,88 +33,8 @@ MANAGED_END = "# sidecar-ui-managed-end"
 DOMAIN_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 COUNTRY_RE = re.compile(r"^[A-Za-z0-9 .,'()&+-]+$")
 
-PROFILES = [
-    {
-        "id": "x-twitter",
-        "name": "X / Twitter",
-        "domains": ["x.com", "twitter.com", "t.co", "twimg.com", "tweetdeck.com", "pscp.tv", "periscope.tv"],
-    },
-    {
-        "id": "openai-chatgpt",
-        "name": "OpenAI / ChatGPT",
-        "domains": ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com"],
-    },
-    {
-        "id": "claude-anthropic",
-        "name": "Claude / Anthropic",
-        "domains": ["claude.ai", "anthropic.com", "anthropicusercontent.com", "claudeusercontent.com"],
-    },
-    {
-        "id": "youtube",
-        "name": "YouTube",
-        "domains": ["youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "ggpht.com", "gvt1.com", "gvt2.com"],
-    },
-    {
-        "id": "netflix",
-        "name": "Netflix",
-        "domains": ["netflix.com", "netflix.net", "nflxvideo.net", "nflximg.net", "nflxext.com", "nflxso.net", "nflxsearch.net"],
-    },
-    {
-        "id": "google",
-        "name": "Google",
-        "domains": ["google.com", "googleapis.com", "gstatic.com", "googleusercontent.com"],
-    },
-    {
-        "id": "google-play",
-        "name": "Google Play",
-        "domains": ["play.google.com", "googleapis.com", "gvt1.com", "gvt2.com", "googleusercontent.com"],
-    },
-    {
-        "id": "github",
-        "name": "GitHub",
-        "domains": ["github.com", "githubusercontent.com", "githubassets.com", "github.io", "ghcr.io"],
-    },
-    {
-        "id": "telegram",
-        "name": "Telegram",
-        "domains": ["telegram.org", "t.me", "telegram.me", "telegram.dog"],
-    },
-    {
-        "id": "discord",
-        "name": "Discord",
-        "domains": ["discord.com", "discord.gg", "discordapp.com", "discordapp.net"],
-    },
-    {
-        "id": "tiktok",
-        "name": "TikTok",
-        "domains": ["tiktok.com", "tiktokv.com", "tiktokcdn.com", "byteoversea.com", "ibytedtos.com", "muscdn.com"],
-    },
-    {
-        "id": "meta",
-        "name": "Meta / Instagram / WhatsApp",
-        "domains": ["facebook.com", "fbcdn.net", "instagram.com", "cdninstagram.com", "whatsapp.com", "whatsapp.net"],
-    },
-    {
-        "id": "reddit",
-        "name": "Reddit",
-        "domains": ["reddit.com", "redd.it", "redditmedia.com", "redditstatic.com"],
-    },
-    {
-        "id": "spotify",
-        "name": "Spotify",
-        "domains": ["spotify.com", "scdn.co", "spotifycdn.com"],
-    },
-    {
-        "id": "steam",
-        "name": "Steam",
-        "domains": ["steampowered.com", "steamcommunity.com", "steamstatic.com", "steamcontent.com", "steamserver.net"],
-    },
-    {
-        "id": "ip-check",
-        "name": "IP check only",
-        "domains": ["ip.sb", "api.ip.sb", "ipinfo.io", "ifconfig.co", "icanhazip.com"],
-    },
-]
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "v2ray-egress-sidecar"))
+from sidecar_services import PROFILES
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):

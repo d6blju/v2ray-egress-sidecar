@@ -269,3 +269,25 @@ python3 ./deploy/v2ray-sidecar-stats.py errors --top 30 --sort errors
 ```
 
 `avg_life` 表示平均连接/UDP association 存活时间，不是 ping 延迟。
+
+统计页面的 `Top Services`、命令行的 `service` 模式和路由界面的应用列表共用
+[`deploy/service-domains.json`](deploy/service-domains.json) 域名表。当前包含 24 个服务，
+包括 GitHub、X/Twitter、ChatGPT、Claude、YouTube、Netflix、Telegram、Discord、
+Meta、Spotify、Steam、Apple、Microsoft、Slack、Zoom、Dropbox 和 Docker 等。
+例如 `github.com`、`githubusercontent.com`、`githubassets.com`、`github.io`
+及其子域名统一显示为 `GitHub`。同一服务、同一出口的连接数、字节、错误和平均
+存活时间合并统计；`Top Domains` 仍保留各个域名。
+
+匹配时优先使用更具体的域名。`gvt1.com` 等 Google 共用下载域名归到 `Google`，
+能够明确识别的 YouTube 和 Google Play 域名单独归类。共享第三方 CDN 和只有 IP
+的连接，不能仅凭目标地址可靠识别具体应用。
+
+域名表的每项包含 `id`、`name` 和 `domains`。可选的 `stats_domains` 用于缩小
+统计匹配范围，避免把路由列表中的共享依赖误判为某个应用；可选的 `sources`
+记录服务商文档链接。执行 `sudo ./deploy/install-ui.sh` 安装更新后的域名表和
+Python 公共模块，安装位置为 `/usr/local/lib/v2ray-egress-sidecar/`。
+修改后，下一次统计页面刷新和命令行报表会使用新的分类；路由界面的应用列表
+需要重启 `v2ray-egress-sidecar-admin-api.service` 才会更新。已有转发规则保持不变，
+直到在界面上重新应用对应的 profile。
+
+分类测试：`python3 -m unittest discover -s tests -v`。

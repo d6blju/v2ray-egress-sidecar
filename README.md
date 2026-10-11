@@ -313,3 +313,28 @@ python3 ./deploy/v2ray-sidecar-stats.py errors --top 30 --sort errors
 
 `avg_life` is average connection or UDP association lifetime, not ping latency.
 
+The dashboard's `Top Services`, the CLI's `service` mode, and the routing
+profiles use the same domain catalog: [`deploy/service-domains.json`](deploy/service-domains.json).
+It includes 24 services, such as GitHub, X/Twitter, ChatGPT, Claude, YouTube,
+Netflix, Telegram, Discord, Meta, Spotify, Steam, Apple, Microsoft, Slack,
+Zoom, Dropbox, and Docker. For example, `github.com`, `githubusercontent.com`,
+`githubassets.com`, `github.io`, and their subdomains all appear as `GitHub`.
+Connections, bytes, errors, and average lifetime are combined per service and
+outbound; `Top Domains` still shows the individual hostnames.
+
+The most specific matching domain wins. Shared Google download domains such
+as `gvt1.com` remain under `Google`, while identifiable YouTube and Google Play
+hosts are grouped separately. Shared third-party CDNs and IP-only destinations
+cannot reliably identify an app from a hostname alone.
+
+Each catalog entry has `id`, `name`, and `domains`. Optional `stats_domains`
+narrows classification when a routing profile includes shared dependencies;
+optional `sources` links to provider documentation. Install the updated catalog
+with `sudo ./deploy/install-ui.sh`. It is installed with its Python helper in
+`/usr/local/lib/v2ray-egress-sidecar/`. After editing it, the next dashboard
+refresh and CLI report use the new grouping. Restart only
+`v2ray-egress-sidecar-admin-api.service` to refresh the routing profile list.
+Existing routing rules are unchanged until you apply a profile.
+
+Run the grouping tests with `python3 -m unittest discover -s tests -v`.
+
