@@ -48,9 +48,18 @@ class ExitPool:
         self.max_host_cpu_percent = float(os.environ.get("SIDECAR_MAX_HOST_CPU_PERCENT", "80"))
         self.host_cpu_reserve_percent = float(os.environ.get("SIDECAR_HOST_CPU_RESERVE_PERCENT", "20"))
         self.container_memory = os.environ.get("SIDECAR_GLUETUN_MEMORY", "128m")
+        self.container_memory_kb = self._parse_memory_kb(self.container_memory)
         self.container_pids = int(os.environ.get("SIDECAR_GLUETUN_PIDS", "128"))
         budget = max(1.0, self.max_host_cpu_percent - self.host_cpu_reserve_percent)
         self.container_cpu_percent = budget / max(1, self.max_countries)
+
+    @staticmethod
+    def _parse_memory_kb(value):
+        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([kmgt])(?:i?b?)?", value.strip().lower())
+        if not match:
+            raise ValueError("invalid Gluetun memory limit: %s" % value)
+        multiplier = {"k": 1, "m": 1024, "g": 1024 * 1024, "t": 1024 * 1024 * 1024}[match.group(2)]
+        return int(float(match.group(1)) * multiplier)
 
     @contextlib.contextmanager
     def locked(self):
@@ -187,7 +196,8 @@ class ExitPool:
             if projected_cpu > self.max_host_cpu_percent:
                 raise RuntimeError("VPN exit capacity reached; host CPU would exceed %.0f%% (now %.1f%%, new exit %.1f%%)" %
                                    (self.max_host_cpu_percent, self._host_cpu_percent(), self.container_cpu_percent))
-            while len({item["country"].casefold() for item in exits}) >= self.max_countries or self._available_memory() < self.min_available_kb:
+            memory_floor = self.min_available_kb + self.container_memory_kb
+            while len({item["country"].casefold() for item in exits}) >= self.max_countries or self._available_memory() < memory_floor:
                 unused = [item for item in exits if item["managed"] and item["port"] not in protected and not self.connected(item["port"])]
                 if protected_ports is None or not unused:
                     raise RuntimeError("VPN exit capacity reached; all cached exits are in use or memory is low")
