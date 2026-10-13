@@ -165,7 +165,7 @@ async function refreshCountries(){
   if(data.country_refreshing)setTimeout(refreshCountries,5000);
  }catch(e){}
 }
-const streamLabels={unlocked:'解锁',originals_only:'仅自制剧',homepage_only:'仅首页可访问',region_unavailable:'地区不可用',ip_blocked:'检测到代理限制',http_refused:'请求被拒绝',challenge:'需要浏览器验证',network_error:'网络请求失败',unknown:'无法判断',homepage_accessible:'首页可访问',page_unknown:'无法判断页面',title_visible:'公开详情页可见',title_unavailable:'公开详情页不可见',title_unknown:'未能判断片名',manifest_available:'公开媒体接口可达'};
+const streamLabels={unlocked:'解锁',originals_only:'仅自制剧',homepage_only:'仅首页可访问',service_available:'服务可用',region_unavailable:'地区不可用',ip_blocked:'检测到代理限制',browser_only:'仅网页可用',mobile_only:'仅移动端可用',http_refused:'请求被拒绝',challenge:'需要浏览器验证',network_error:'网络请求失败',unknown:'无法判断',homepage_accessible:'首页可访问',page_unknown:'无法判断页面',title_visible:'公开详情页可见',title_unavailable:'公开详情页不可见',title_unknown:'未能判断片名',manifest_available:'公开媒体接口可达'};
 function matchesStream(job){return job&&(job.profile==='matrix'||job.profile===$('profile').value)&&job.country===$('country').value&&job.protocol===($('openvpn-tcp').checked?'tcp':'udp')}
 function regionText(code){if(!code)return '未识别';try{return regionNames?`${regionNames.of(code)} (${code})`:code}catch(e){return code}}
 function formatIp(data){return data?.ok?`IP: ${data.ip}\n国家: ${data.country_code?regionText(data.country_code):(data.country||'未识别')}${data.city?'\n城市: '+data.city:''}${data.country_source?'\n地区来源: '+data.country_source:''}`:`检测失败: ${data?.error||'未知错误'}`}

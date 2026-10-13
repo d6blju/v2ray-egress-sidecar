@@ -15,8 +15,11 @@ DEPLOY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, DEPLOY)
 from sidecar_exits import ExitPool, exit_metadata
 from sidecar_streaming import (MATRIX_PROFILES, classify_unlock, inspect_bbc_region,
-                               inspect_chatgpt, inspect_page, test_service as probe_service,
-                               test_matrix as probe_matrix, title_ids)
+                               inspect_chatgpt, inspect_claude, inspect_dazn,
+                               inspect_disney,
+                               inspect_page, inspect_prime, inspect_youtube_premium,
+                               test_service as probe_service, test_matrix as probe_matrix,
+                               title_ids)
 from sidecar_unlock import classify_dns
 from sidecar_streaming_jobs import StreamingJobs
 
@@ -212,10 +215,55 @@ class StreamingEvidenceTests(unittest.TestCase):
         def request(url):
             if "compliance" in url:
                 return response('{"unsupported_country":true}', url=url)
-            return response("<html>ok</html>", url=url)
+            return response("VPN", url=url)
 
         result = inspect_chatgpt(request)
         self.assertEqual(result["status"], "region_unavailable")
+
+    def test_rrc_service_specific_markers_are_used(self):
+        dazn_calls = []
+        def dazn_request(url, **kwargs):
+            dazn_calls.append((url, kwargs))
+            return response('{"isAllowed":true,"GeolocatedCountry":"TR"}', url=url)
+        dazn = inspect_dazn(dazn_request)
+        self.assertEqual(dazn["status"], "unlocked")
+        self.assertEqual(dazn["region"], "TR")
+        self.assertEqual(dazn_calls[0][1]["method"], "POST")
+        self.assertIn("LandingPageKey", dazn_calls[0][1]["data"])
+
+        prime = inspect_prime({"body": '{"currentTerritory":"TR"}', "status": "homepage_accessible"})
+        self.assertEqual(prime["status"], "unlocked")
+        self.assertEqual(prime["region"], "TR")
+        blocked = inspect_prime({"body": "isServiceRestricted", "status": "homepage_accessible"})
+        self.assertEqual(blocked["status"], "region_unavailable")
+
+        youtube = inspect_youtube_premium({
+            "body": '{"INNERTUBE_CONTEXT_GL":"TR"} ad-free',
+            "status": "homepage_accessible",
+        })
+        self.assertEqual(youtube["status"], "unlocked")
+        self.assertEqual(youtube["region"], "TR")
+
+        self.assertEqual(inspect_claude({"url": "https://claude.ai/"})["status"], "unlocked")
+        self.assertEqual(inspect_claude({"url": "https://www.anthropic.com/app-unavailable-in-region"})["status"], "region_unavailable")
+
+    def test_disney_flow_is_stage_specific_and_does_not_guess_from_homepage(self):
+        with patch.dict(os.environ, {
+            "SIDECAR_DISNEY_DEVICE_AUTH": "Bearer fixture",
+            "SIDECAR_DISNEY_TOKEN_PAYLOAD": "assertion=DISNEYASSERTION",
+            "SIDECAR_DISNEY_GRAPHQL_PAYLOAD": "refresh=ILOVEDISNEY",
+        }):
+            def request(url, **kwargs):
+                if url.endswith("/devices"):
+                    return response('{"assertion":"a"}', url=url)
+                if url.endswith("/token"):
+                    return response('{"refresh_token":"r"}', url=url)
+                if "/graphql" in url:
+                    return response('{"countryCode":"TR","inSupportedLocation":true}', url=url)
+                return response("", url="https://www.disneyplus.com/")
+            result = inspect_disney(request)
+        self.assertEqual(result["status"], "unlocked")
+        self.assertEqual(result["region"], "TR")
 
     def test_matrix_has_social_and_ai_services_on_the_same_proxy(self):
         calls = []

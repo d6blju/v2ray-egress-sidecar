@@ -6,6 +6,7 @@ import re
 import subprocess
 import tempfile
 import time
+import uuid
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
@@ -15,7 +16,7 @@ from sidecar_unlock import classify_dns
 
 REFERENCE = "https://github.com/lmc999/RegionRestrictionCheck"
 STREAMING = {item["id"]: item for item in SERVICES if item.get("streaming_url") or item.get("probe_url")}
-MATRIX_PROFILES = ["tiktok", "disney-plus", "netflix", "youtube", "prime-video", "reddit", "openai-chatgpt", "hbo-max", "claude-anthropic"]
+MATRIX_PROFILES = ["tiktok", "disney-plus", "netflix", "youtube", "prime-video", "dazn", "reddit", "openai-chatgpt", "hbo-max", "claude-anthropic"]
 DEFAULT_NETFLIX_TITLES = ["80057281", "81280792", "70143836"]
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
@@ -87,7 +88,7 @@ def title_ids(values):
     return result
 
 
-def fetch(proxy, url, timeout=12):
+def fetch(proxy, url, timeout=12, method="GET", headers=None, data=None):
     parsed = urlparse(proxy)
     if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1") or parsed.username or parsed.password or not parsed.port:
         raise ValueError("use a localhost Gluetun HTTP proxy")
@@ -102,6 +103,14 @@ def fetch(proxy, url, timeout=12):
             "--dump-header", header_path, "--output", body_path,
             "--write-out", "%{http_code}\n%{url_effective}\n%{time_total}", url,
         ]
+        if method != "GET":
+            args[1:1] = ["--request", method.upper()]
+        insert_at = args.index("--dump-header")
+        for header_name, header_value in (headers or {}).items():
+            args[insert_at:insert_at] = ["--header", "%s: %s" % (header_name, header_value)]
+            insert_at += 2
+        if data is not None:
+            args[insert_at:insert_at] = ["--data-binary", data]
         result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 universal_newlines=True, timeout=timeout + 5)
         fields = result.stdout.splitlines()
@@ -247,18 +256,24 @@ def _response_status(response):
 def inspect_chatgpt(request):
     compliance = request("https://api.openai.com/compliance/cookie_requirements")
     ios = request("https://ios.chat.openai.com/")
-    text = (compliance.get("body", "") + "\n" + ios.get("body", "")).lower()
-    if "unsupported_country" in text or "unsupported country" in text:
-        return unlock_result("region_unavailable", "OpenAI 返回 unsupported_country")
-    if "vpn" in text and "required" not in text:
-        return unlock_result("ip_blocked", "OpenAI 接口标记 VPN/代理风险")
-    if _response_status(compliance) == "ok" and _response_status(ios) == "ok":
-        return unlock_result("unlocked", "OpenAI 合规接口和 iOS 接口均可访问")
-    if "cf-chl-" in text or "challenge-platform" in text:
-        return unlock_result("challenge", "OpenAI 返回浏览器验证")
+    body1 = compliance.get("body", "")
+    body2 = ios.get("body", "")
     if _response_status(compliance) == "network_error" or _response_status(ios) == "network_error":
         return unlock_result("network_error", "OpenAI 专用接口请求失败")
-    return unlock_result("unknown", "OpenAI 专用接口没有返回可判定字段")
+    if not body1 or not body2:
+        return unlock_result("unknown", "OpenAI 专用接口返回空响应")
+
+    unsupported = "unsupported_country" in body1.lower()
+    vpn = "vpn" in body2.lower()
+    # Keep the four-way result used by RegionRestrictionCheck: the two
+    # endpoints distinguish country support from browser-only availability.
+    if not unsupported and not vpn:
+        return unlock_result("unlocked", "OpenAI 合规接口和 iOS 接口均未返回限制标记")
+    if unsupported and vpn:
+        return unlock_result("region_unavailable", "OpenAI 同时返回 unsupported_country 和 VPN")
+    if vpn:
+        return unlock_result("browser_only", "OpenAI 仅允许网页端，iOS 接口返回 VPN 标记")
+    return unlock_result("mobile_only", "OpenAI 合规接口返回 unsupported_country，移动接口未返回 VPN")
 
 
 def inspect_tiktok(homepage):
@@ -271,10 +286,82 @@ def inspect_tiktok(homepage):
     return unlock_result("unknown", "TikTok 页面没有可判定的 region 字段")
 
 
+def inspect_disney(request):
+    # RegionRestrictionCheck uses an anonymous Disney client flow. Keep its
+    # public client material outside the repository because it changes and is
+    # not needed by the sidecar itself.
+    device_auth = os.environ.get("SIDECAR_DISNEY_DEVICE_AUTH", "").strip()
+    token_payload = os.environ.get("SIDECAR_DISNEY_TOKEN_PAYLOAD", "").strip()
+    graph_payload = os.environ.get("SIDECAR_DISNEY_GRAPHQL_PAYLOAD", "").strip()
+    if not device_auth or not token_payload or not graph_payload:
+        return unlock_result("unknown", "Disney+ 专用接口未配置匿名客户端参数")
+
+    devices = request(
+        "https://disney.api.edge.bamgrid.com/devices", method="POST",
+        headers={"Authorization": device_auth, "Content-Type": "application/json"},
+        data=json.dumps({"deviceFamily": "browser", "applicationRuntime": "chrome",
+                         "deviceProfile": "windows", "attributes": {}}),
+    )
+    device_body = devices.get("body", "")
+    if devices.get("http_status") == 403 or "403 error" in device_body.lower():
+        return unlock_result("ip_blocked", "Disney+ devices 接口返回 403")
+    assertion_match = re.search(r'"assertion"\s*:\s*"([^"]+)"', device_body)
+    if not assertion_match:
+        return unlock_result("unknown", "Disney+ devices 接口没有 assertion")
+
+    token = request(
+        "https://disney.api.edge.bamgrid.com/token", method="POST",
+        headers={"Authorization": device_auth, "Content-Type": "application/x-www-form-urlencoded"},
+        data=token_payload.replace("DISNEYASSERTION", assertion_match.group(1)),
+    )
+    token_body = token.get("body", "")
+    if "forbidden-location" in token_body.lower() or token.get("http_status") == 403:
+        return unlock_result("ip_blocked", "Disney+ token 接口返回 forbidden-location/403")
+    refresh_match = re.search(r'"refresh_token"\s*:\s*"([^"]+)"', token_body)
+    if not refresh_match:
+        return unlock_result("unknown", "Disney+ token 接口没有 refresh_token")
+
+    graph = request(
+        "https://disney.api.edge.bamgrid.com/graph/v1/device/graphql", method="POST",
+        headers={"Authorization": device_auth, "Content-Type": "application/json"},
+        data=graph_payload.replace("ILOVEDISNEY", refresh_match.group(1)),
+    )
+    preview = request("https://disneyplus.com")
+    graph_body = graph.get("body", "")
+    region_match = re.search(r'"countryCode"\s*:\s*"([^"]+)"', graph_body)
+    supported_match = re.search(r'"inSupportedLocation"\s*:\s*(false|true)', graph_body)
+    if not region_match:
+        return unlock_result("region_unavailable", "Disney+ GraphQL 没有 countryCode")
+    region = region_match.group(1).upper()
+    if region == "JP":
+        return unlock_result("unlocked", "Disney+ GraphQL 返回支持地区", region, "Disney+ device GraphQL")
+    if re.search(r"preview|unavailable", preview.get("url", ""), re.I):
+        return unlock_result("region_unavailable", "Disney+ preview 地址表示服务不可用", region, "Disney+ device GraphQL")
+    if supported_match and supported_match.group(1) == "false":
+        return unlock_result("service_available", "Disney+ 返回地区信息但尚未在该地区完整开放", region, "Disney+ device GraphQL")
+    if supported_match and supported_match.group(1) == "true":
+        return unlock_result("unlocked", "Disney+ GraphQL 返回 inSupportedLocation=true", region, "Disney+ device GraphQL")
+    return unlock_result("unknown", "Disney+ GraphQL 没有 inSupportedLocation", region, "Disney+ device GraphQL")
+
+
 def inspect_dazn(request):
-    response = request("https://startup.core.indazn.com/misl/v5/Startup")
+    payload = json.dumps({
+        "Version": "2", "LandingPageKey": "generic", "Languages": "zh-CN",
+        "Platform": "web", "Manufacturer": "", "PromoCode": "",
+        "PlatformAttributes": {},
+    })
+    response = request(
+        "https://startup.core.indazn.com/misl/v5/Startup", method="POST",
+        headers={
+            "Accept": "*/*", "Content-Type": "application/json",
+            "Origin": "https://www.dazn.com", "Referer": "https://www.dazn.com/",
+            "X-Session-Id": str(uuid.uuid4()),
+        }, data=payload,
+    )
     if _response_status(response) != "ok":
         return unlock_result(_response_status(response), "DAZN Startup 接口请求失败")
+    if "security policy has been breached" in response.get("body", "").lower():
+        return unlock_result("ip_blocked", "DAZN Startup 返回 Security policy has been breached")
     try:
         data = json.loads(response.get("body", ""))
     except ValueError:
@@ -287,6 +374,45 @@ def inspect_dazn(request):
     if allowed is True:
         return unlock_result("unlocked", "DAZN isAllowed=true", region, "DAZN Startup")
     return unlock_result("unknown", "DAZN Startup 没有 isAllowed 字段", region, "DAZN Startup" if region else None)
+
+
+def inspect_prime(homepage):
+    body = homepage.get("body", "")
+    region_match = re.search(r'"currentTerritory"\s*:\s*"([^"]+)"', body)
+    if "isServiceRestricted" in body:
+        return unlock_result("region_unavailable", "Prime Video 返回 isServiceRestricted")
+    if region_match:
+        return unlock_result("unlocked", "Prime Video 返回 currentTerritory", region_match.group(1), "Prime Video page metadata")
+    if homepage.get("status") == "network_error":
+        return unlock_result("network_error", "Prime Video 页面网络请求失败")
+    return unlock_result("unknown", "Prime Video 页面没有 currentTerritory 或限制字段")
+
+
+def inspect_youtube_premium(homepage):
+    body = homepage.get("body", "")
+    lower = body.lower()
+    if "www.google.cn" in lower:
+        return unlock_result("region_unavailable", "YouTube Premium 页面跳转到 Google CN", "CN", "YouTube Premium page")
+    if "premium is not available in your country" in lower:
+        return unlock_result("region_unavailable", "YouTube Premium 页面提示所在国家不可用")
+    region_match = re.search(r'"INNERTUBE_CONTEXT_GL"\s*:\s*"([^"]+)"', body)
+    region = region_match.group(1).upper() if region_match else "UNKNOWN"
+    if "ad-free" in lower:
+        return unlock_result("unlocked", "YouTube Premium 页面包含 ad-free 能力标记", region, "YouTube Premium page metadata")
+    if homepage.get("status") == "network_error":
+        return unlock_result("network_error", "YouTube Premium 页面网络请求失败")
+    return unlock_result("unknown", "YouTube Premium 页面没有 ad-free 或地区限制字段", region if region != "UNKNOWN" else None, "YouTube Premium page metadata" if region != "UNKNOWN" else None)
+
+
+def inspect_claude(homepage):
+    final_url = homepage.get("url", "")
+    if final_url == "https://claude.ai/":
+        return unlock_result("unlocked", "Claude 最终地址保持在 claude.ai")
+    if final_url == "https://www.anthropic.com/app-unavailable-in-region":
+        return unlock_result("region_unavailable", "Claude 跳转到地区不可用页面")
+    if homepage.get("status") == "network_error":
+        return unlock_result("network_error", "Claude 页面网络请求失败")
+    return unlock_result("unknown", "Claude 最终跳转地址不是已知结果")
 
 
 def classify_unlock(profile_id, homepage, titles, eligibility, request):
@@ -311,8 +437,16 @@ def classify_unlock(profile_id, homepage, titles, eligibility, request):
         return inspect_chatgpt(request)
     if profile_id == "tiktok":
         return inspect_tiktok(homepage)
+    if profile_id == "disney-plus":
+        return inspect_disney(request)
     if profile_id == "dazn":
         return inspect_dazn(request)
+    if profile_id == "prime-video":
+        return inspect_prime(homepage)
+    if profile_id == "youtube":
+        return inspect_youtube_premium(homepage)
+    if profile_id == "claude-anthropic":
+        return inspect_claude(homepage)
     if profile_id == "bbc-iplayer":
         if eligibility and eligibility.get("status") == "manifest_available":
             return unlock_result("unlocked", "BBC media selector 返回可用媒体 manifest", "GB", "BBC media selector")
@@ -336,8 +470,12 @@ def test_service(profile_id, country, exit_info, titles=None, requester=fetch, d
     if not service:
         raise ValueError("choose a known streaming service")
     proxy = "http://" + exit_info["proxy"]
-    def request(url):
+    def request(url, method="GET", headers=None, data=None):
         try:
+            if method == "GET" and not headers and data is None:
+                return requester(proxy, url)
+            if requester is fetch:
+                return requester(proxy, url, method=method, headers=headers, data=data)
             return requester(proxy, url)
         except (OSError, subprocess.SubprocessError) as error:
             return {"http_status": 0, "url": url, "seconds": 0, "curl_exit": -1,

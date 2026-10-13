@@ -20,7 +20,7 @@
   {
     "id": "youtube",
     "name": "YouTube",
-    "streaming_url": "https://www.youtube.com/",
+    "streaming_url": "https://www.youtube.com/premium",
     "domains": ["youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "youtube-nocookie.com", "youtubei.googleapis.com", "ggpht.com", "gvt1.com", "gvt2.com"],
     "stats_domains": ["youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "youtube-nocookie.com", "youtubei.googleapis.com", "yt3.ggpht.com"]
   },
