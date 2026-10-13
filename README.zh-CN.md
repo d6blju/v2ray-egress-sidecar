@@ -325,9 +325,12 @@ HTTP 200 不代表能播放。若容器没有可用 DNS 工具，方式保持“
 
 UI 和命令行共用跨进程锁，防止并发创建同国家容器。复用时保留容器 ID 和实际
 端口；已停止的容器直接启动。去重或缓存容量清理，只删除没有路由引用和活跃
-TCP 连接的闲置容器。协议不匹配会报错，不会自动替换正在使用的出口。新容器
-限制为 128 MiB 内存，使用本机已有的 Gluetun 镜像。可通过环境变量调整缓存限制：
-`SIDECAR_MAX_VPN_COUNTRIES=3`、`SIDECAR_VPN_MIN_AVAILABLE_KB=163840`、
+TCP 连接的闲置容器。协议不匹配会报错，不会自动替换正在使用的出口。新建或复用的
+受管出口都限制为 128 MiB 内存、单核主机约 0.2 CPU 和 128 个进程。新建前会检查预计
+主机 CPU 不超过 80%，并保留至少 320 MiB 可用内存；默认最多缓存 3 个国家。可通过
+环境变量调整：`SIDECAR_MAX_VPN_COUNTRIES=3`、`SIDECAR_VPN_MIN_AVAILABLE_KB=327680`、
+`SIDECAR_MAX_HOST_CPU_PERCENT=80`、`SIDECAR_HOST_CPU_RESERVE_PERCENT=20`、
+`SIDECAR_GLUETUN_MEMORY=128m`、`SIDECAR_GLUETUN_PIDS=128`，以及
 `SIDECAR_EXIT_STATE_DIR=/var/lib/v2ray-egress-sidecar-exits`。
 
 通过现有出口执行命令行检测：

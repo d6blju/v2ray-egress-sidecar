@@ -44,7 +44,13 @@ class ExitPool:
         self.run = runner
         self.state_dir = state_dir or os.environ.get("SIDECAR_EXIT_STATE_DIR", "/var/lib/v2ray-egress-sidecar-exits")
         self.max_countries = int(os.environ.get("SIDECAR_MAX_VPN_COUNTRIES", "3"))
-        self.min_available_kb = int(os.environ.get("SIDECAR_VPN_MIN_AVAILABLE_KB", "163840"))
+        self.min_available_kb = int(os.environ.get("SIDECAR_VPN_MIN_AVAILABLE_KB", "327680"))
+        self.max_host_cpu_percent = float(os.environ.get("SIDECAR_MAX_HOST_CPU_PERCENT", "80"))
+        self.host_cpu_reserve_percent = float(os.environ.get("SIDECAR_HOST_CPU_RESERVE_PERCENT", "20"))
+        self.container_memory = os.environ.get("SIDECAR_GLUETUN_MEMORY", "128m")
+        self.container_pids = int(os.environ.get("SIDECAR_GLUETUN_PIDS", "128"))
+        budget = max(1.0, self.max_host_cpu_percent - self.host_cpu_reserve_percent)
+        self.container_cpu_percent = budget / max(1, self.max_countries)
 
     @contextlib.contextmanager
     def locked(self):
@@ -105,6 +111,31 @@ class ExitPool:
             pass
         return 0
 
+    def _host_cpu_percent(self):
+        try:
+            with open("/proc/loadavg", encoding="utf-8") as info:
+                load = float(info.read().split()[0])
+            return load / max(1, os.cpu_count() or 1) * 100.0
+        except (OSError, ValueError, IndexError):
+            return 0.0
+
+    def _container_cpus(self):
+        cpus = self.container_cpu_percent / 100.0 * max(1, os.cpu_count() or 1)
+        return "%.3f" % max(0.05, cpus)
+
+    def _resource_args(self):
+        return [
+            "--memory", self.container_memory,
+            "--memory-swap", self.container_memory,
+            "--cpus", self._container_cpus(),
+            "--pids-limit", str(self.container_pids),
+        ]
+
+    def _limit_container(self, item):
+        if not item.get("managed"):
+            return
+        self.run(["docker", "update"] + self._resource_args() + [item["container"]], 15)
+
     def _free_port(self, preferred, exits):
         used = {item["port"] for item in exits}
         for port in [preferred] + list(range(18893, 18933)):
@@ -131,9 +162,12 @@ class ExitPool:
                     raise ValueError("this country already has an exit using %s; reuse that protocol" % existing[0]["protocol"])
                 item = sorted(compatible, key=lambda value: (not self.healthy(value), value["port"] != preferred_port, value["created"]))[0]
                 if item["status"] in ("exited", "created"):
+                    self._limit_container(item)
                     self.run(["docker", "start", item["container"]], 15)
                 elif not self.healthy(item):
                     raise RuntimeError("existing exit is unhealthy; it was not replaced")
+                else:
+                    self._limit_container(item)
                 return self._wait(item["container"], reused=True)
 
             credential_file = os.environ.get("SIDECAR_NORDVPN_ENV", "/etc/gluetun/nordvpn.env")
@@ -149,6 +183,10 @@ class ExitPool:
             if protected_ports is not None:
                 self._prune_duplicates(exits, protected)
             exits = self.list()
+            projected_cpu = self._host_cpu_percent() + self.container_cpu_percent
+            if projected_cpu > self.max_host_cpu_percent:
+                raise RuntimeError("VPN exit capacity reached; host CPU would exceed %.0f%% (now %.1f%%, new exit %.1f%%)" %
+                                   (self.max_host_cpu_percent, self._host_cpu_percent(), self.container_cpu_percent))
             while len({item["country"].casefold() for item in exits}) >= self.max_countries or self._available_memory() < self.min_available_kb:
                 unused = [item for item in exits if item["managed"] and item["port"] not in protected and not self.connected(item["port"])]
                 if protected_ports is None or not unused:
@@ -162,7 +200,7 @@ class ExitPool:
                 "docker", "run", "-d", "--name", name,
                 "--label", "v2ray-egress-sidecar.managed=1", "--cap-add=NET_ADMIN",
                 "--device", "/dev/net/tun:/dev/net/tun", "--restart", "unless-stopped",
-                "--memory", "128m", "-p", "127.0.0.1:%d:8888/tcp" % port,
+                *self._resource_args(), "-p", "127.0.0.1:%d:8888/tcp" % port,
                 "--env-file", credential_file, "-e", "VPN_SERVICE_PROVIDER=nordvpn",
                 "-e", "VPN_TYPE=openvpn", "-e", "OPENVPN_PROTOCOL=" + protocol,
                 "-e", "SERVER_COUNTRIES=" + country, "-e", "HTTPPROXY=on",

@@ -379,10 +379,14 @@ The UI and CLI share a process lock to prevent duplicate country containers.
 Existing exits retain their container ID and proxy port; stopped exits are
 restarted. Only unreferenced exits without active TCP connections can be
 removed for duplicate cleanup or cache capacity. A protocol mismatch is
-reported instead of silently replacing a country's active exit. New exits
-have a 128 MiB memory limit and use the installed Gluetun image. Configure
-pool defaults with `SIDECAR_MAX_VPN_COUNTRIES=3`,
-`SIDECAR_VPN_MIN_AVAILABLE_KB=163840`, and
+reported instead of silently replacing a country's active exit. New and
+reused managed exits are capped at 128 MiB memory, 0.2 CPU on a single-core
+host, and 128 processes. New exits are admitted only when the projected host
+CPU stays below 80% and at least 320 MiB remains available; the defaults also
+allow at most three countries. Configure the pool with
+`SIDECAR_MAX_VPN_COUNTRIES=3`, `SIDECAR_VPN_MIN_AVAILABLE_KB=327680`,
+`SIDECAR_MAX_HOST_CPU_PERCENT=80`, `SIDECAR_HOST_CPU_RESERVE_PERCENT=20`,
+`SIDECAR_GLUETUN_MEMORY=128m`, `SIDECAR_GLUETUN_PIDS=128`, and
 `SIDECAR_EXIT_STATE_DIR=/var/lib/v2ray-egress-sidecar-exits`.
 
 Command-line probes through an existing exit:

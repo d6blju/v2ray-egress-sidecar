@@ -49,6 +49,8 @@ class DockerFixture:
             return json.dumps([item for item in self.items if item["Id"] in args[2:]])
         if args[:3] == ["docker", "image", "inspect"]:
             return "{}"
+        if args[:2] == ["docker", "update"]:
+            return args[-1]
         if args[:2] == ["docker", "start"]:
             for item in self.items:
                 if item["Name"] == "/" + args[2]:
@@ -166,6 +168,30 @@ class ExitReuseTests(unittest.TestCase):
                 results = list(workers.map(lambda pool: pool.ensure("Japan"), pools))
         self.assertEqual(sum(call[:2] == ["docker", "run"] for call in docker.calls), 1)
         self.assertEqual(results[0]["id"], results[1]["id"])
+
+    def test_new_exit_has_memory_cpu_and_pid_limits(self):
+        pool, docker = self.pool([])
+        credentials = os.path.join(self.temporary.name, "fixture.env")
+        with open(credentials, "w") as output:
+            output.write("OPENVPN_USER=fixture\nOPENVPN_PASSWORD=fixture\n")
+        with patch.dict(os.environ, {"SIDECAR_NORDVPN_ENV": credentials}):
+            pool.ensure("Japan")
+        command = next(call for call in docker.calls if call[:2] == ["docker", "run"])
+        self.assertEqual(command[command.index("--memory") + 1], "128m")
+        self.assertEqual(command[command.index("--memory-swap") + 1], "128m")
+        self.assertEqual(command[command.index("--cpus") + 1], pool._container_cpus())
+        self.assertEqual(command[command.index("--pids-limit") + 1], "128")
+
+    def test_new_exit_is_rejected_when_cpu_budget_would_be_exceeded(self):
+        pool, docker = self.pool([])
+        pool._host_cpu_percent = lambda: 70.0
+        credentials = os.path.join(self.temporary.name, "fixture.env")
+        with open(credentials, "w") as output:
+            output.write("OPENVPN_USER=fixture\nOPENVPN_PASSWORD=fixture\n")
+        with patch.dict(os.environ, {"SIDECAR_NORDVPN_ENV": credentials}):
+            with self.assertRaisesRegex(RuntimeError, "host CPU would exceed"):
+                pool.ensure("Japan")
+        self.assertFalse(any(call[:2] == ["docker", "run"] for call in docker.calls))
 
     def test_capacity_cannot_evict_configured_exits(self):
         pool, docker = self.pool([container()])
