@@ -415,7 +415,7 @@ def inspect_claude(homepage):
     return unlock_result("unknown", "Claude 最终跳转地址不是已知结果")
 
 
-def classify_unlock(profile_id, homepage, titles, eligibility, request):
+def classify_unlock(profile_id, homepage, titles, eligibility, request, homepage_response=None):
     if profile_id == "netflix":
         title_reports = titles or []
         visible = [item for item in title_reports if item.get("status") == "title_visible"]
@@ -442,9 +442,9 @@ def classify_unlock(profile_id, homepage, titles, eligibility, request):
     if profile_id == "dazn":
         return inspect_dazn(request)
     if profile_id == "prime-video":
-        return inspect_prime(homepage)
+        return inspect_prime(homepage_response or homepage)
     if profile_id == "youtube":
-        return inspect_youtube_premium(homepage)
+        return inspect_youtube_premium(homepage_response or homepage)
     if profile_id == "claude-anthropic":
         return inspect_claude(homepage)
     if profile_id == "bbc-iplayer":
@@ -497,11 +497,12 @@ def test_service(profile_id, country, exit_info, titles=None, requester=fetch, d
                 geo = {"ip": fields.get("ip"), "country_code": fields.get("loc"), "source": "Cloudflare trace"}
         except (ValueError, OSError, subprocess.SubprocessError):
             pass
+    homepage_response = request(service.get("streaming_url") or service["probe_url"])
     result = {
         "profile": profile_id, "service": service["name"], "requested_country": country,
         "exit": dict(exit_info), "geoip": geo, "started_at": started,
         "transport": "TCP / IPv4", "method_reference": REFERENCE,
-        "homepage": inspect_page(profile_id, request(service.get("streaming_url") or service["probe_url"])),
+        "homepage": inspect_page(profile_id, homepage_response),
         "titles": [], "playback_verified": False,
         "playback_status": "requires_account_and_player",
     }
@@ -512,7 +513,7 @@ def test_service(profile_id, country, exit_info, titles=None, requester=fetch, d
     if profile_id == "bbc-iplayer":
         result["eligibility"] = inspect_bbc_region(request("https://open.live.bbc.co.uk/mediaselector/6/select/version/2.0/mediaset/pc/vpid/bbc_one_london/format/json"))
     result["dns"] = classify_dns(profile_id, exit_info, dns_runner, dns_cache)
-    result["unlock"] = classify_unlock(profile_id, result["homepage"], result["titles"], result.get("eligibility"), request)
+    result["unlock"] = classify_unlock(profile_id, result["homepage"], result["titles"], result.get("eligibility"), request, homepage_response)
     result["method"] = result["dns"]["method"]
     result["method_label"] = result["dns"]["method_label"]
     result["finished_at"] = int(time.time())
