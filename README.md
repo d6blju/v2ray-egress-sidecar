@@ -352,20 +352,26 @@ Peacock, Apple TV+, Discovery+, Crunchyroll, Twitch, BBC/iPlayer, DAZN, Bilibili
 and YouTube are supported, along with TikTok, Reddit, X, Instagram, ChatGPT,
 and Claude web probes. The common-services button shows TikTok, Disney+,
 Netflix, YouTube, Prime Video, Reddit, ChatGPT, HBO Max, and Claude as columns,
-with status, region, and transport rows. An `(IP)` region uses IP geolocation,
-not a country returned by that service. The transport is VPN/TCP, not an
-unverified claim about native or DNS unlocking. Tests run in one background queue, reuse that
-country's exit, and do not apply routing rules. Netflix also accepts up to four
-title IDs or Netflix links and reports public detail-page visibility.
+with status, region, and method rows. Status is based on service-specific
+evidence: Netflix title pages, BBC media selection, DAZN Startup, TikTok region
+metadata, and OpenAI compliance/iOS endpoints are checked where supported.
+An `(IP)` region uses IP geolocation, not a country returned by that service.
+Tests run in one background queue, reuse that country's exit, and do not apply
+routing rules. Netflix also accepts up to four title IDs or Netflix links and
+reports public detail-page visibility.
 Netflix redirects and current HTML headings are used as evidence; BBC/iPlayer
 also probes its public media-selection endpoint for explicit geography errors.
 
 Results separate IP geolocation, service-reported country, homepage access,
-region errors, browser challenges, and public title visibility. Anonymous
-probes do not verify paid playback, account entitlements, DRM, or the complete
-regional catalog. HTTP 200 alone is not proof of streaming access. Methods
-reference [RegionRestrictionCheck](https://github.com/lmc999/RegionRestrictionCheck),
-without bundling its script or account cookies. Requests use the selected
+region errors, browser challenges, and public title visibility. For a successful
+service-specific result, the detector repeats the reference project's three DNS
+checks inside the selected Gluetun container and reports `Native`, `DNS`, or
+`Unknown`. This is a heuristic for DNS unlocking, not proof of DRM playback.
+Anonymous probes do not verify paid playback, account entitlements, DRM, or the
+complete regional catalog. HTTP 200 alone is not proof of streaming access.
+Methods reference [RegionRestrictionCheck](https://github.com/lmc999/RegionRestrictionCheck),
+without bundling its script or account cookies. If the container has no usable
+DNS tool, the method remains `Unknown` instead of being guessed. Requests use the selected
 localhost HTTP CONNECT proxy, are limited to 128 KiB/s, and test TCP/IPv4;
 the sidecar's direct UDP/QUIC path is outside this test.
 

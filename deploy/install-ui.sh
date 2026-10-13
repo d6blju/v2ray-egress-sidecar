@@ -12,6 +12,7 @@ install -m 0644 ./deploy/sidecar_services.py "${LIB_DIR}/sidecar_services.py"
 install -m 0644 ./deploy/service-domains.json "${LIB_DIR}/service-domains.json"
 install -m 0644 ./deploy/sidecar_exits.py "${LIB_DIR}/sidecar_exits.py"
 install -m 0644 ./deploy/sidecar_streaming.py "${LIB_DIR}/sidecar_streaming.py"
+install -m 0644 ./deploy/sidecar_unlock.py "${LIB_DIR}/sidecar_unlock.py"
 install -m 0644 ./deploy/sidecar_streaming_jobs.py "${LIB_DIR}/sidecar_streaming_jobs.py"
 
 install -m 0644 ./web/control.html "${WEB_ROOT}/control.html"

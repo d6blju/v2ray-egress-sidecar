@@ -10,6 +10,7 @@ from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 from sidecar_services import SERVICES
+from sidecar_unlock import classify_dns
 
 
 REFERENCE = "https://github.com/lmc999/RegionRestrictionCheck"
@@ -225,7 +226,112 @@ def inspect_bbc_region(response):
     return item
 
 
-def test_service(profile_id, country, exit_info, titles=None, requester=fetch):
+def unlock_result(status, evidence, region=None, region_source=None):
+    return {
+        "status": status,
+        "evidence": evidence,
+        "region": region,
+        "region_source": region_source,
+        "playback_verified": False,
+    }
+
+
+def _response_status(response):
+    if response.get("curl_exit") or not response.get("http_status"):
+        return "network_error"
+    if response.get("http_status", 0) >= 400:
+        return "http_refused"
+    return "ok"
+
+
+def inspect_chatgpt(request):
+    compliance = request("https://api.openai.com/compliance/cookie_requirements")
+    ios = request("https://ios.chat.openai.com/")
+    text = (compliance.get("body", "") + "\n" + ios.get("body", "")).lower()
+    if "unsupported_country" in text or "unsupported country" in text:
+        return unlock_result("region_unavailable", "OpenAI 返回 unsupported_country")
+    if "vpn" in text and "required" not in text:
+        return unlock_result("ip_blocked", "OpenAI 接口标记 VPN/代理风险")
+    if _response_status(compliance) == "ok" and _response_status(ios) == "ok":
+        return unlock_result("unlocked", "OpenAI 合规接口和 iOS 接口均可访问")
+    if "cf-chl-" in text or "challenge-platform" in text:
+        return unlock_result("challenge", "OpenAI 返回浏览器验证")
+    if _response_status(compliance) == "network_error" or _response_status(ios) == "network_error":
+        return unlock_result("network_error", "OpenAI 专用接口请求失败")
+    return unlock_result("unknown", "OpenAI 专用接口没有返回可判定字段")
+
+
+def inspect_tiktok(homepage):
+    body = homepage.get("body", "")
+    match = re.search(r"[\\\"']region[\\\"']\\s*:\\s*[\\\"']([A-Z]{2})[\\\"']", body)
+    if match:
+        return unlock_result("unlocked", "TikTok 页面 region 字段", match.group(1), "TikTok page metadata")
+    if "idc ip" in body.lower():
+        return unlock_result("homepage_only", "TikTok 仅返回 IDC IP 字段，未取得服务地区")
+    return unlock_result("unknown", "TikTok 页面没有可判定的 region 字段")
+
+
+def inspect_dazn(request):
+    response = request("https://startup.core.indazn.com/misl/v5/Startup")
+    if _response_status(response) != "ok":
+        return unlock_result(_response_status(response), "DAZN Startup 接口请求失败")
+    try:
+        data = json.loads(response.get("body", ""))
+    except ValueError:
+        return unlock_result("unknown", "DAZN Startup 返回不是 JSON")
+    values = list(objects(data))
+    allowed = next((item.get("isAllowed") for item in values if "isAllowed" in item), None)
+    region = next((item.get("GeolocatedCountry") for item in values if item.get("GeolocatedCountry")), None)
+    if allowed is False:
+        return unlock_result("region_unavailable", "DAZN isAllowed=false", region, "DAZN Startup")
+    if allowed is True:
+        return unlock_result("unlocked", "DAZN isAllowed=true", region, "DAZN Startup")
+    return unlock_result("unknown", "DAZN Startup 没有 isAllowed 字段", region, "DAZN Startup" if region else None)
+
+
+def classify_unlock(profile_id, homepage, titles, eligibility, request):
+    if profile_id == "netflix":
+        title_reports = titles or []
+        visible = [item for item in title_reports if item.get("status") == "title_visible"]
+        region = next((item.get("region") for item in visible if item.get("region")), None)
+        if visible:
+            return unlock_result("unlocked", "至少一个公开片名详情页可见", region, "Netflix title metadata")
+        statuses = [item.get("http_status") for item in title_reports]
+        if statuses and all(value == 404 for value in statuses):
+            return unlock_result("originals_only", "测试片名均为 HTTP 404，仅能推断可能是 Originals Only")
+        if any(value == 403 for value in statuses):
+            return unlock_result("region_unavailable", "Netflix 测试片名返回 HTTP 403")
+        if any(item.get("status") == "title_unavailable" for item in title_reports):
+            return unlock_result("originals_only", "Netflix 公开详情页提示片名不可用")
+        if homepage.get("status") == "challenge":
+            return unlock_result("challenge", "Netflix 首页需要浏览器验证")
+        return unlock_result("unknown", "Netflix 片名接口没有返回足够证据")
+
+    if profile_id == "openai-chatgpt":
+        return inspect_chatgpt(request)
+    if profile_id == "tiktok":
+        return inspect_tiktok(homepage)
+    if profile_id == "dazn":
+        return inspect_dazn(request)
+    if profile_id == "bbc-iplayer":
+        if eligibility and eligibility.get("status") == "manifest_available":
+            return unlock_result("unlocked", "BBC media selector 返回可用媒体 manifest", "GB", "BBC media selector")
+        if eligibility and eligibility.get("status") == "region_unavailable":
+            return unlock_result("region_unavailable", "BBC media selector 返回地区限制")
+    if homepage.get("status") == "region_unavailable":
+        return unlock_result("region_unavailable", "服务页面明确返回地区不可用", homepage.get("region"), homepage.get("region_source"))
+    if homepage.get("status") == "challenge":
+        return unlock_result("challenge", "服务页面需要浏览器验证")
+    if homepage.get("status") == "http_refused":
+        return unlock_result("http_refused", "服务页面被 HTTP 拒绝")
+    if homepage.get("status") == "network_error":
+        return unlock_result("network_error", "服务页面网络请求失败")
+    if homepage.get("status") == "homepage_accessible":
+        return unlock_result("homepage_only", "仅确认首页可访问，未取得地区/片库专用证据", homepage.get("region"), homepage.get("region_source"))
+    return unlock_result("unknown", "服务没有返回可判定的专用结果")
+
+
+def test_service(profile_id, country, exit_info, titles=None, requester=fetch, dns_runner=None, dns_cache=None):
     service = STREAMING.get(profile_id)
     if not service:
         raise ValueError("choose a known streaming service")
@@ -267,13 +373,19 @@ def test_service(profile_id, country, exit_info, titles=None, requester=fetch):
             result["titles"].append(inspect_page(profile_id, response, identifier))
     if profile_id == "bbc-iplayer":
         result["eligibility"] = inspect_bbc_region(request("https://open.live.bbc.co.uk/mediaselector/6/select/version/2.0/mediaset/pc/vpid/bbc_one_london/format/json"))
+    result["dns"] = classify_dns(profile_id, exit_info, dns_runner, dns_cache)
+    result["unlock"] = classify_unlock(profile_id, result["homepage"], result["titles"], result.get("eligibility"), request)
+    result["method"] = result["dns"]["method"]
+    result["method_label"] = result["dns"]["method_label"]
     result["finished_at"] = int(time.time())
     return result
 
 
 def test_matrix(country, exit_info, titles=None, requester=fetch):
     started = int(time.time())
-    reports = [test_service(profile, country, exit_info, titles if profile == "netflix" else [], requester)
+    dns_cache = {}
+    reports = [test_service(profile, country, exit_info, titles if profile == "netflix" else [], requester,
+                             dns_cache=dns_cache)
                for profile in MATRIX_PROFILES]
     return {"reports": reports, "requested_country": country, "exit": dict(exit_info),
             "started_at": started, "finished_at": int(time.time()), "transport": "TCP / IPv4",

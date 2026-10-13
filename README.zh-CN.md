@@ -305,16 +305,20 @@ Hulu、Prime Video、Paramount+、Peacock、Apple TV+、Discovery+、Crunchyroll
 BBC/iPlayer、DAZN、Bilibili 和 YouTube，以及 TikTok、Reddit、X、Instagram、ChatGPT
 和 Claude 网页探测。点击“检测常用服务”，以 TikTok、Disney+、Netflix、YouTube、
 Prime Video、Reddit、ChatGPT、HBO Max、Claude 为列，展示状态、地区和方式。
-地区旁的 `(IP)` 表示 IP 数据库国家，而不是服务返回的国家；方式显示 VPN/TCP，
-不会把未经检测的原生或 DNS 解锁当成结论。检测通过后台单线程队列运行，复用国家出口，
+Netflix 片名页、BBC 媒体选择接口、DAZN Startup、TikTok region 字段以及
+OpenAI 合规/iOS 接口会使用各自的专用证据。地区旁的 `(IP)` 表示 IP 数据库国家，
+而不是服务返回的国家。检测通过后台单线程队列运行，复用国家出口，
 不应用转发规则。Netflix 可输入最多四个片名 ID 或 Netflix 链接，检测公开详情页
 是否可见。
 Netflix 检测使用服务返回的地区跳转和当前 HTML 标题作为证据；BBC/iPlayer
 还检测公开媒体选择接口中的明确地区错误。
 
 结果分别展示 IP 数据库地区、服务识别地区、首页访问、地区限制、浏览器验证和
-片名页面可见性。匿名检测不能确认订阅权限、DRM、真实播放或完整地区片库；
-HTTP 200 不代表能播放。检测方法参考
+片名页面可见性。服务专用检测成功后，会在所选 Gluetun 容器内重复参考项目的
+三项 DNS 检查，方式显示为“原生”“DNS”或“未知”。这只是 DNS 解锁启发式判断，
+不是 DRM 播放证明。匿名检测不能确认订阅权限、DRM、真实播放或完整地区片库；
+HTTP 200 不代表能播放。若容器没有可用 DNS 工具，方式保持“未知”，不会猜测。
+检测方法参考
 [RegionRestrictionCheck](https://github.com/lmc999/RegionRestrictionCheck)，项目没有
 捆绑其脚本或账号 Cookie。请求通过所选本机 HTTP CONNECT 出口，限速 128 KiB/s，
 测试 TCP/IPv4；sidecar 目前直出的 UDP/QUIC 不在检测范围内。

@@ -165,15 +165,17 @@ async function refreshCountries(){
   if(data.country_refreshing)setTimeout(refreshCountries,5000);
  }catch(e){}
 }
-const streamLabels={homepage_accessible:'首页可访问',region_unavailable:'地区不可用',http_refused:'请求被拒绝',challenge:'需要浏览器验证',network_error:'网络请求失败',page_unknown:'无法判断页面',title_visible:'公开详情页可见',title_unavailable:'公开详情页不可见',title_unknown:'未能判断片名',manifest_available:'公开媒体接口可达'};
+const streamLabels={unlocked:'解锁',originals_only:'仅自制剧',homepage_only:'仅首页可访问',region_unavailable:'地区不可用',ip_blocked:'检测到代理限制',http_refused:'请求被拒绝',challenge:'需要浏览器验证',network_error:'网络请求失败',unknown:'无法判断',homepage_accessible:'首页可访问',page_unknown:'无法判断页面',title_visible:'公开详情页可见',title_unavailable:'公开详情页不可见',title_unknown:'未能判断片名',manifest_available:'公开媒体接口可达'};
 function matchesStream(job){return job&&(job.profile==='matrix'||job.profile===$('profile').value)&&job.country===$('country').value&&job.protocol===($('openvpn-tcp').checked?'tcp':'udp')}
 function regionText(code){if(!code)return '未识别';try{return regionNames?`${regionNames.of(code)} (${code})`:code}catch(e){return code}}
 function formatIp(data){return data?.ok?`IP: ${data.ip}\n国家: ${data.country_code?regionText(data.country_code):(data.country||'未识别')}${data.city?'\n城市: '+data.city:''}${data.country_source?'\n地区来源: '+data.country_source:''}`:`检测失败: ${data?.error||'未知错误'}`}
 const matrixNames={'openai-chatgpt':'ChatGPT','claude-anthropic':'Claude','prime-video':'Amazon PV'};
 function renderMatrix(reports){
- const items=reports||[],statuses=items.map(r=>r.homepage.status), row=(name,cells)=>`<tr><th>${name}</th>${cells.map(c=>`<td>${c}</td>`).join('')}</tr>`;
- const stateCells=items.map((r,i)=>`<span class="${statuses[i]==='homepage_accessible'?'probe-good':['region_unavailable','http_refused'].includes(statuses[i])?'probe-bad':'probe-warn'}">${esc(streamLabels[statuses[i]]||statuses[i])}${r.homepage.status==='http_refused'?' '+r.homepage.http_status:''}</span>`);
- $('matrix-result').innerHTML=items.length?'<table><thead>'+row('服务商',items.map(r=>esc(matrixNames[r.profile]||r.service)))+'</thead><tbody>'+row('状态',stateCells)+row('地区',items.map(r=>{const code=r.homepage.region||(r.titles||[]).find(t=>t.region)?.region;return `<span title="${esc(code?'服务返回的地区':'出口 IP 数据库地区')}" >${esc(code||r.geoip.country_code||'?')}${code?'':' (IP)'}</span>`}))+row('方式',items.map(()=> 'VPN / TCP'))+'</tbody></table>':'';
+ const items=reports||[],statuses=items.map(r=>r.unlock?.status||r.homepage.status), row=(name,cells)=>`<tr><th>${name}</th>${cells.map(c=>`<td>${c}</td>`).join('')}</tr>`;
+ const stateCells=items.map((r,i)=>{const status=statuses[i],bad=['region_unavailable','ip_blocked','http_refused','network_error'].includes(status),good=status==='unlocked';return `<span class="${good?'probe-good':bad?'probe-bad':'probe-warn'}" title="${esc(r.unlock?.evidence||'')}" >${esc(streamLabels[status]||status)}${status==='http_refused'?' '+r.homepage.http_status:''}</span>`});
+ const regionCells=items.map(r=>{const code=r.unlock?.region||r.homepage.region||(r.titles||[]).find(t=>t.region)?.region;return `<span title="${esc(code?(r.unlock?.region_source||'服务专用接口'):'出口 IP 数据库地区')}" >${esc(code||r.geoip.country_code||'?')}${code?'':' (IP)'}</span>`});
+ const methodCells=items.map(r=>{const status=r.unlock?.status,usable=['unlocked','originals_only'].includes(status);return `<span title="${esc(r.dns?.checks?.map(c=>c.domain+': '+(c.method_label||'未知')).join('；')||'未执行 DNS 三项检查')}" >${esc(usable?(r.method_label||'未知'):'未形成解锁判定')}</span>`});
+ $('matrix-result').innerHTML=items.length?'<table><thead>'+row('服务商',items.map(r=>esc(matrixNames[r.profile]||r.service)))+'</thead><tbody>'+row('状态',stateCells)+row('地区',regionCells)+row('方式',methodCells)+'</tbody></table>':'';
 }
 function renderStreamingJob(job){
  if(!matchesStream(job))return;
@@ -188,9 +190,9 @@ function renderStreamingJob(job){
   $('stream-status').textContent=`检测于 ${new Date(r.finished_at*1000).toLocaleString('zh-CN')} · ${countryLabel(job.country)} · ${r.exit.reused?'复用已有出口':'新建出口'} · ${r.transport}`;
   $('stream-result').textContent='真实播放及账号权限：待验证';renderMatrix(r.reports);return;
  }
- const h=r.homepage, region=h.region||(r.titles||[]).find(x=>x.region)?.region;
+ const h=r.homepage, region=r.unlock?.region||h.region||(r.titles||[]).find(x=>x.region)?.region;
  $('stream-status').textContent=`检测于 ${new Date(r.finished_at*1000).toLocaleString('zh-CN')} · ${r.exit.reused?'复用已有出口':'新建出口'} · ${r.transport}`;
- const facts=[['出口 IP',r.geoip.ip||'未识别'],['IP 数据库国家',regionText(r.geoip.country_code)],['服务识别地区',regionText(region)],['首页',`${streamLabels[h.status]||h.status} (HTTP ${h.http_status})`],['代理节点',r.exit.container||r.exit.proxy],['真实播放','待账号及播放器验证']];
+ const facts=[['出口 IP',r.geoip.ip||'未识别'],['IP 数据库国家',regionText(r.geoip.country_code)],['服务识别地区',regionText(region)],['平台判定',`${streamLabels[r.unlock?.status]||r.unlock?.status||'未判断'}${r.unlock?.evidence?' · '+r.unlock.evidence:''}`],['判定方式',r.unlock?.status&&['unlocked','originals_only'].includes(r.unlock.status)?(r.method_label||'未知'):'未形成解锁判定'],['首页',`${streamLabels[h.status]||h.status} (HTTP ${h.http_status})`],['代理节点',r.exit.container||r.exit.proxy],['真实播放','待账号及播放器验证']];
  if(r.eligibility)facts.push(['地区接口',`${streamLabels[r.eligibility.status]||r.eligibility.status} (HTTP ${r.eligibility.http_status})`]);
  $('stream-result').innerHTML='<dl class="stream-facts">'+facts.map(([label,value])=>`<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')+'</dl>'+
  ((r.titles||[]).length?'<div class="stream-table"><table><thead><tr><th>片名 / ID</th><th>公开片库探测</th><th>地区</th><th>播放</th></tr></thead><tbody>'+r.titles.map(t=>`<tr><td>${esc(t.title||t.title_id)}<br><span class="muted">${esc(t.title_id)}</span></td><td>${esc(streamLabels[t.status]||t.status)} · HTTP ${t.http_status}</td><td>${esc(regionText(t.region))}</td><td>未验证</td></tr>`).join('')+'</tbody></table></div>':'');

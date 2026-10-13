@@ -14,7 +14,10 @@ from unittest.mock import patch
 DEPLOY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "deploy")
 sys.path.insert(0, DEPLOY)
 from sidecar_exits import ExitPool, exit_metadata
-from sidecar_streaming import MATRIX_PROFILES, inspect_page, inspect_bbc_region, test_service as probe_service, test_matrix as probe_matrix, title_ids
+from sidecar_streaming import (MATRIX_PROFILES, classify_unlock, inspect_bbc_region,
+                               inspect_chatgpt, inspect_page, test_service as probe_service,
+                               test_matrix as probe_matrix, title_ids)
+from sidecar_unlock import classify_dns
 from sidecar_streaming_jobs import StreamingJobs
 
 
@@ -179,6 +182,41 @@ def response(body, status=200, url="https://www.netflix.com/", headers="", code=
 
 
 class StreamingEvidenceTests(unittest.TestCase):
+    def test_rrc_dns_checks_distinguish_dns_and_native(self):
+        def native_runner(container_name, hostname):
+            if hostname.startswith("test"):
+                return {"available": True, "answers": [], "resolver": "10.0.0.2"}
+            return {"available": True, "answers": ["1.1.1.1", "8.8.8.8", "9.9.9.9"], "resolver": "10.0.0.2"}
+
+        native = classify_dns("netflix", {"container": "gluetun-ui"}, native_runner)
+        self.assertEqual(native["method"], "native")
+        self.assertEqual(native["checks"][0]["checks"], {"answer_ip": 1, "answer_count": 1, "random_name": 1})
+
+        def dns_runner(container_name, hostname):
+            if hostname.startswith("test"):
+                return {"available": True, "answers": ["10.0.0.10"], "resolver": "10.0.0.2"}
+            return {"available": True, "answers": ["1.1.1.1"], "resolver": "10.0.0.2"}
+
+        dns = classify_dns("netflix", {"container": "gluetun-ui"}, dns_runner)
+        self.assertEqual(dns["method"], "dns")
+        self.assertEqual(dns["method_label"], "DNS")
+
+    def test_platform_result_is_separate_from_homepage_result(self):
+        homepage = inspect_page("netflix", response("<title>Netflix</title>"))
+        title = inspect_page("netflix", response('<title>Netflix</title><h1>Example</h1>', url="https://www.netflix.com/title/70143836"), "70143836")
+        result = classify_unlock("netflix", homepage, [title], None, lambda url: response("{}", url=url))
+        self.assertEqual(homepage["status"], "homepage_accessible")
+        self.assertEqual(result["status"], "unlocked")
+
+    def test_chatgpt_special_endpoint_rejects_unsupported_country(self):
+        def request(url):
+            if "compliance" in url:
+                return response('{"unsupported_country":true}', url=url)
+            return response("<html>ok</html>", url=url)
+
+        result = inspect_chatgpt(request)
+        self.assertEqual(result["status"], "region_unavailable")
+
     def test_matrix_has_social_and_ai_services_on_the_same_proxy(self):
         calls = []
         def requester(proxy, url):
