@@ -431,12 +431,14 @@ def current_state(exits=None):
     state.setdefault("outbound", OUTBOUND_TAG)
     state.setdefault("proxy", PROXY_ADDR)
     container = state.get("container")
-    if exits is not None and not state["active"]:
+    # An inactive UI route must not be reconstructed from a cached exit. Manual
+    # rules may still use that exit, but they are intentionally outside this UI state.
+    if exits is not None and state["active"] and not container:
         match = next((item for item in exits if item["country"] == state.get("country") and EXIT_POOL.healthy(item)), None)
         if match:
             state.update(container=match["container"], proxy=match["proxy"], protocol=match["protocol"])
             container = match["container"]
-    state["gluetun"] = gluetun_status(container)
+    state["gluetun"] = gluetun_status(container) if state["active"] and container else None
     return state
 
 
@@ -516,7 +518,20 @@ class Handler(BaseHTTPRequestHandler):
                 with MUTATION_LOCK:
                     backup = clear_sidecar_config()
                     state = load_json(STATE_PATH, {})
-                    state.update(active=False, domains=[], updated_at=int(time.time()), backup=backup, outbound=OUTBOUND_TAG)
+                    state.update(
+                        active=False,
+                        profile=None,
+                        country=None,
+                        protocol=None,
+                        domains=[],
+                        include_ip_sb=False,
+                        proxy=None,
+                        container=None,
+                        gluetun=None,
+                        updated_at=int(time.time()),
+                        backup=backup,
+                        outbound=OUTBOUND_TAG,
+                    )
                     save_json(STATE_PATH, state)
                 json_response(self, 200, {"ok": True, "state": current_state(), "backup": backup})
                 return

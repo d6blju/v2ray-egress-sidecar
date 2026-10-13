@@ -102,7 +102,10 @@ class ControlAPITests(unittest.TestCase):
         status, cleared = self.request("/api/clear", {})
         self.assertEqual(status, 200)
         self.assertFalse(cleared["state"]["active"])
-        self.assertEqual(cleared["state"]["country"], "Bangladesh")
+        self.assertIsNone(cleared["state"]["country"])
+        self.assertIsNone(cleared["state"]["proxy"])
+        self.assertIsNone(cleared["state"]["container"])
+        self.assertIsNone(cleared["state"]["gluetun"])
         with open(self.config) as source:
             config = source.read()
         self.assertNotIn("nord-ui", config)
