@@ -9,7 +9,8 @@ with open(REGISTRY_PATH, "r", encoding="utf-8") as registry_file:
     SERVICES = json.load(registry_file)
 
 PROFILES = [
-    {"id": item["id"], "name": item["name"], "domains": list(item["domains"])}
+    {"id": item["id"], "name": item["name"], "domains": list(item["domains"]),
+     "streaming": bool(item.get("streaming_url") or item.get("probe_url"))}
     for item in SERVICES
 ]
 

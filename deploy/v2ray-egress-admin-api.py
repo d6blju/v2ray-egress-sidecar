@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import json
+import ipaddress
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -35,6 +37,15 @@ COUNTRY_RE = re.compile(r"^[A-Za-z0-9 .,'()&+-]+$")
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "v2ray-egress-sidecar"))
 from sidecar_services import PROFILES
+from sidecar_exits import ExitPool
+from sidecar_streaming import STREAMING, title_ids
+from sidecar_streaming_jobs import StreamingJobs
+
+EXIT_POOL = ExitPool()
+STREAMING_JOBS = None
+MUTATION_LOCK = threading.Lock()
+COUNTRY_REFRESH_LOCK = threading.Lock()
+COUNTRY_LAST_ATTEMPT = 0
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -127,7 +138,7 @@ def save_json(path, data):
             pass
 
 
-def country_options():
+def fetch_country_options():
     cached = load_json(COUNTRY_OPTIONS_CACHE_PATH, None)
     cache_age = 10**9
     if cached and os.path.exists(COUNTRY_OPTIONS_CACHE_PATH):
@@ -161,6 +172,26 @@ def country_options():
         {"name": name, "code": FALLBACK_COUNTRY_CODES.get(name, "")}
         for name in FALLBACK_COUNTRIES
     ]
+
+
+def country_options():
+    global COUNTRY_LAST_ATTEMPT
+    cached = load_json(COUNTRY_OPTIONS_CACHE_PATH, None)
+    if not isinstance(cached, list) or not cached:
+        legacy = load_json(COUNTRY_CACHE_PATH, FALLBACK_COUNTRIES)
+        if not isinstance(legacy, list) or not legacy:
+            legacy = FALLBACK_COUNTRIES
+        cached = [{"name": name, "code": FALLBACK_COUNTRY_CODES.get(name, "")} for name in legacy]
+    age = time.time() - os.path.getmtime(COUNTRY_OPTIONS_CACHE_PATH) if os.path.exists(COUNTRY_OPTIONS_CACHE_PATH) else 86401
+    if age >= 86400 and (COUNTRY_LAST_ATTEMPT == 0 or time.monotonic() - COUNTRY_LAST_ATTEMPT >= 300) and COUNTRY_REFRESH_LOCK.acquire(False):
+        COUNTRY_LAST_ATTEMPT = time.monotonic()
+        def refresh():
+            try:
+                fetch_country_options()
+            finally:
+                COUNTRY_REFRESH_LOCK.release()
+        threading.Thread(target=refresh, name="country-refresh", daemon=True).start()
+    return cached
 
 
 def countries():
@@ -248,7 +279,7 @@ def remove_managed_artifacts(text):
     return "\n\n".join(kept).strip() + "\n"
 
 
-def managed_block(country, profile_id, domains):
+def managed_block(country, profile_id, domains, proxy_addr=None):
     lines = [
         MANAGED_BEGIN,
         "# managed_by = v2ray-sidecar-admin-api",
@@ -258,7 +289,7 @@ def managed_block(country, profile_id, domains):
         "[[outbounds]]",
         'tag = "%s"' % OUTBOUND_TAG,
         'kind = "http_connect"',
-        'addr = "%s"' % PROXY_ADDR,
+        'addr = "%s"' % (proxy_addr or PROXY_ADDR),
         "",
     ]
     for domain in domains:
@@ -272,11 +303,11 @@ def managed_block(country, profile_id, domains):
     return "\n".join(lines).rstrip() + "\n"
 
 
-def write_sidecar_config(country, profile_id, domains):
+def write_sidecar_config(country, profile_id, domains, proxy_addr=None):
     with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
         current = fh.read()
     clean = remove_managed_artifacts(current)
-    block = managed_block(country, profile_id, domains)
+    block = managed_block(country, profile_id, domains, proxy_addr)
     marker = "\n[[rules]]"
     if marker in clean:
         idx = clean.index(marker) + 1
@@ -319,50 +350,93 @@ def clear_sidecar_config():
     return backup
 
 
-def gluetun_status():
+def gluetun_status(container=None):
+    container = container or CONTAINER_NAME
     try:
-        status = run_cmd(["docker", "inspect", "-f", "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}no-health{{end}}", CONTAINER_NAME], timeout=10)
+        status = run_cmd(["docker", "inspect", "-f", "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}no-health{{end}}", container], timeout=10)
     except Exception as exc:
-        return {"container": CONTAINER_NAME, "status": "missing", "health": "missing", "error": str(exc)}
+        return {"container": container, "status": "missing", "health": "missing", "error": str(exc)}
     parts = status.split()
     return {
-        "container": CONTAINER_NAME,
+        "container": container,
         "status": parts[0] if parts else "unknown",
         "health": parts[1] if len(parts) > 1 else "unknown",
     }
 
 
+def protected_proxy_ports():
+    with open(CONFIG_PATH, "r", encoding="utf-8") as source:
+        sections = toml_sections(source.read())
+    outbounds, referenced = [], set()
+    for section in sections:
+        if section.lstrip().startswith("[[outbounds]]"):
+            outbounds.append((section_value(section, "tag"), section_value(section, "addr")))
+        if section.lstrip().startswith("[[rules]]"):
+            referenced.add(section_value(section, "outbound"))
+    if outbounds:
+        referenced.add(outbounds[0][0])
+    ports = set()
+    for tag, address in outbounds:
+        if tag in referenced and address and re.fullmatch(r"127\.0\.0\.1:[0-9]+", address):
+            ports.add(int(address.split(":")[1]))
+    if STREAMING_JOBS:
+        active = STREAMING_JOBS.active_countries()
+        ports.update(item["port"] for item in EXIT_POOL.list() if item["country"].casefold() in active)
+    return ports
+
+
+def preferred_proxy_port(country):
+    state = load_json(STATE_PATH, {})
+    address = state.get("proxy", "")
+    if state.get("country") == country and re.fullmatch(r"127\.0\.0\.1:[0-9]+", address):
+        return int(address.split(":")[1])
+    return int(PROXY_PORT)
+
+
 def start_gluetun(country, protocol):
-    if not COUNTRY_RE.match(country):
-        raise ValueError("bad country name")
-    if protocol not in ("udp", "tcp"):
-        raise ValueError("bad protocol")
-    output = run_cmd([START_SCRIPT, CONTAINER_TAG, country, PROXY_PORT, protocol], timeout=120)
-    deadline = time.time() + 90
-    last_status = ""
-    while time.time() < deadline:
-        status = gluetun_status()
-        last_status = "%s/%s" % (status.get("status"), status.get("health"))
-        if status.get("health") == "healthy" or (status.get("status") == "running" and status.get("health") == "no-health"):
-            return {"output": output, "status": status}
-        time.sleep(2)
-    raise RuntimeError("gluetun did not become healthy, last status=%s" % last_status)
+    info = EXIT_POOL.ensure(country, protocol, preferred_proxy_port(country), protected_proxy_ports())
+    return {"exit": info, "status": {key: info[key] for key in ("container", "status", "health")}}
 
 
 def check_ip():
+    args = ["curl", "-fsS", "--ipv4", "--noproxy", "", "--connect-timeout", "4", "--max-time", "10", "--socks5-hostname", SIDECAR_SOCKS]
     try:
-        ip = run_cmd(["curl", "-fsS", "--max-time", "20", "--socks5-hostname", SIDECAR_SOCKS, "https://api.ip.sb/ip"], timeout=25)
-        return {"ok": True, "ip": ip.strip()}
+        raw = run_cmd(args + ["https://api.ip.sb/geoip"], timeout=15)
+        data = json.loads(raw)
+        ipaddress.ip_address(data["ip"])
+        if data.get("country_code") or data.get("country"):
+            return dict({"ok": True, "country_source": "ip.sb"}, **{key: data.get(key) for key in ("ip", "country", "country_code", "city", "organization")})
+    except Exception:
+        pass
+    try:
+        ip = run_cmd(args + ["https://api.ip.sb/ip"], timeout=15)
+        ip = str(ipaddress.ip_address(ip.strip()))
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+    try:
+        # Look up the measured IP: another hostname can use a different sidecar route.
+        raw = run_cmd(args + ["https://ipwho.is/" + ip], timeout=15)
+        data = json.loads(raw)
+        if data.get("success") is True and str(ipaddress.ip_address(data["ip"])) == ip and data.get("country_code"):
+            return {"ok": True, "ip": ip, "country": data.get("country"), "country_code": data["country_code"],
+                    "city": data.get("city"), "country_source": "ipwho.is (measured ip.sb IP)"}
+    except Exception:
+        pass
+    return {"ok": True, "ip": ip, "country_source": None}
 
 
-def current_state():
+def current_state(exits=None):
     state = load_json(STATE_PATH, {})
     state.setdefault("active", False)
     state.setdefault("outbound", OUTBOUND_TAG)
     state.setdefault("proxy", PROXY_ADDR)
-    state["gluetun"] = gluetun_status()
+    container = state.get("container")
+    if exits is not None and not state["active"]:
+        match = next((item for item in exits if item["country"] == state.get("country") and EXIT_POOL.healthy(item)), None)
+        if match:
+            state.update(container=match["container"], proxy=match["proxy"], protocol=match["protocol"])
+            container = match["container"]
+    state["gluetun"] = gluetun_status(container)
     return state
 
 
@@ -375,17 +449,33 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/state":
             options = country_options()
+            try:
+                exits = EXIT_POOL.list()
+                exit_error = None
+            except Exception as error:
+                exits, exit_error = [], str(error)
             json_response(self, 200, {
                 "ok": True,
                 "profiles": PROFILES,
                 "countries": [item["name"] for item in options],
                 "country_options": options,
-                "state": current_state(),
+                "country_refreshing": COUNTRY_REFRESH_LOCK.locked(),
+                "state": current_state(exits),
+                "exits": exits,
+                "exit_error": exit_error,
+                "streaming_jobs": STREAMING_JOBS.recent() if STREAMING_JOBS else [],
                 "notes": {
                     "ip_check": "api.ip.sb is tested through sidecar SOCKS on %s" % SIDECAR_SOCKS,
                     "udp": "Current NordVPN HTTP CONNECT outbound carries TCP only; sidecar UDP remains direct.",
                 },
             })
+            return
+        if self.path.startswith("/api/streaming/"):
+            job = STREAMING_JOBS.get(self.path.rsplit("/", 1)[-1]) if STREAMING_JOBS else None
+            if job is None:
+                error_response(self, 404, "test not found")
+            else:
+                json_response(self, 200, {"ok": True, "job": job})
             return
         if self.path == "/api/ipcheck":
             json_response(self, 200, check_ip())
@@ -407,18 +497,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if self.path == "/api/apply":
-                self.handle_apply(payload)
+                with MUTATION_LOCK:
+                    self.handle_apply(payload)
+                return
+            if self.path == "/api/streaming/test":
+                profile = str(payload.get("profile") or "")
+                country = str(payload.get("country") or "").strip()
+                protocol = str(payload.get("protocol") or "udp")
+                if (profile not in STREAMING and profile != "matrix") or country not in countries() or protocol not in ("udp", "tcp"):
+                    raise ValueError("choose a known streaming service, country and protocol")
+                titles = title_ids(payload.get("titles") or [])
+                if profile not in ("netflix", "matrix") and titles:
+                    raise ValueError("custom title probes currently support Netflix only")
+                job = STREAMING_JOBS.submit(profile, country, protocol, titles, preferred_proxy_port(country))
+                json_response(self, 202, {"ok": True, "job": job})
                 return
             if self.path == "/api/clear":
-                backup = clear_sidecar_config()
-                state = {
-                    "active": False,
-                    "updated_at": int(time.time()),
-                    "backup": backup,
-                    "outbound": OUTBOUND_TAG,
-                    "proxy": PROXY_ADDR,
-                }
-                save_json(STATE_PATH, state)
+                with MUTATION_LOCK:
+                    backup = clear_sidecar_config()
+                    state = load_json(STATE_PATH, {})
+                    state.update(active=False, domains=[], updated_at=int(time.time()), backup=backup, outbound=OUTBOUND_TAG)
+                    save_json(STATE_PATH, state)
                 json_response(self, 200, {"ok": True, "state": current_state(), "backup": backup})
                 return
         except Exception as exc:
@@ -442,7 +541,8 @@ class Handler(BaseHTTPRequestHandler):
         if not domains:
             raise ValueError("no domains selected")
         gluetun = start_gluetun(country, protocol)
-        backup = write_sidecar_config(country, profile_id, domains)
+        info = gluetun["exit"]
+        backup = write_sidecar_config(country, profile_id, domains, info["proxy"])
         state = {
             "active": True,
             "profile": profile_id,
@@ -451,18 +551,32 @@ class Handler(BaseHTTPRequestHandler):
             "domains": domains,
             "include_ip_sb": include_ip_sb,
             "outbound": OUTBOUND_TAG,
-            "proxy": PROXY_ADDR,
+            "proxy": info["proxy"],
+            "container": info["container"],
             "updated_at": int(time.time()),
             "backup": backup,
             "gluetun": gluetun.get("status", {}),
         }
         save_json(STATE_PATH, state)
         time.sleep(6)
-        json_response(self, 200, {"ok": True, "state": current_state(), "backup": backup, "ip_check": check_ip()})
+        json_response(self, 200, {"ok": True, "state": current_state(), "backup": backup, "ip_check": check_ip(), "exit_reused": info["reused"]})
 
 
 def main():
+    global STREAMING_JOBS
     ensure_state_dir()
+    STREAMING_JOBS = StreamingJobs(EXIT_POOL, protected_proxy_ports, STATE_DIR, mutation_lock=MUTATION_LOCK)
+    def maintain_exits():
+        while True:
+            time.sleep(60)
+            try:
+                if time.time() - os.path.getmtime(CONFIG_PATH) < 30:
+                    continue
+                with MUTATION_LOCK:
+                    EXIT_POOL.prune_duplicates(protected_proxy_ports())
+            except Exception:
+                pass
+    threading.Thread(target=maintain_exits, name="exit-maintenance", daemon=True).start()
     server = ThreadingHTTPServer((API_HOST, API_PORT), Handler)
     server.serve_forever()
 

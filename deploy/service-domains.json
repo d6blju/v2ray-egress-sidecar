@@ -2,28 +2,125 @@
   {
     "id": "x-twitter",
     "name": "X / Twitter",
+    "probe_url": "https://x.com/",
     "domains": ["x.com", "twitter.com", "t.co", "twimg.com", "tweetdeck.com", "pscp.tv", "periscope.tv"]
   },
   {
     "id": "openai-chatgpt",
     "name": "OpenAI / ChatGPT",
+    "probe_url": "https://chatgpt.com/",
     "domains": ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com"]
   },
   {
     "id": "claude-anthropic",
     "name": "Claude / Anthropic",
+    "probe_url": "https://claude.ai/",
     "domains": ["claude.ai", "anthropic.com", "anthropicusercontent.com", "claudeusercontent.com"]
   },
   {
     "id": "youtube",
     "name": "YouTube",
+    "streaming_url": "https://www.youtube.com/",
     "domains": ["youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "youtube-nocookie.com", "youtubei.googleapis.com", "ggpht.com", "gvt1.com", "gvt2.com"],
     "stats_domains": ["youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "youtube-nocookie.com", "youtubei.googleapis.com", "yt3.ggpht.com"]
   },
   {
     "id": "netflix",
     "name": "Netflix",
+    "streaming_url": "https://www.netflix.com/",
     "domains": ["netflix.com", "netflix.net", "nflxvideo.net", "nflximg.net", "nflxext.com", "nflxso.net", "nflxsearch.net"]
+  },
+  {
+    "id": "hbo-max",
+    "name": "HBO Max",
+    "domains": ["hbomax.com", "max.com", "hbo.com", "hbonow.com", "hbomaxcdn.com", "discomax.com"],
+    "streaming_url": "https://www.max.com/",
+    "sources": ["https://help.hbomax.com/us-en/Answer/Detail/000002518"]
+  },
+  {
+    "id": "disney-plus",
+    "name": "Disney+",
+    "domains": ["disneyplus.com", "disney-plus.net", "dssott.com", "disney.api.edge.bamgrid.com", "disney.playback.edge.bamgrid.com", "disney.content.edge.bamgrid.com", "disney.images.edge.bamgrid.com"],
+    "streaming_url": "https://www.disneyplus.com/",
+    "sources": ["https://www.disneyplus.com/", "https://help.disneyplus.com/article/disneyplus-en-ph-location-availability"]
+  },
+  {
+    "id": "hulu",
+    "name": "Hulu",
+    "domains": ["hulu.com", "huluim.com", "hulustream.com", "hulu.api.edge.bamgrid.com", "hulu.playback.edge.bamgrid.com"],
+    "streaming_url": "https://www.hulu.com/",
+    "sources": ["https://www.hulu.com/"]
+  },
+  {
+    "id": "prime-video",
+    "name": "Prime Video",
+    "domains": ["primevideo.com", "amazonvideo.com", "aiv-cdn.net", "aiv-delivery.net", "atv-ps.amazon.com", "atv-ps-eu.amazon.com", "atv-ps-fe.amazon.com"],
+    "streaming_url": "https://www.primevideo.com/",
+    "sources": ["https://www.primevideo.com/"]
+  },
+  {
+    "id": "paramount-plus",
+    "name": "Paramount+",
+    "domains": ["paramountplus.com", "pplusstatic.com", "cbsaavideo.com", "cbsivideo.com"],
+    "streaming_url": "https://www.paramountplus.com/",
+    "sources": ["https://www.paramountplus.com/"]
+  },
+  {
+    "id": "peacock",
+    "name": "Peacock",
+    "domains": ["peacocktv.com", "peacocktv.io"],
+    "streaming_url": "https://www.peacocktv.com/",
+    "sources": ["https://www.peacocktv.com/"]
+  },
+  {
+    "id": "apple-tv",
+    "name": "Apple TV+",
+    "domains": ["tv.apple.com", "apple.com", "icloud.com", "mzstatic.com"],
+    "stats_domains": ["tv.apple.com"],
+    "streaming_url": "https://tv.apple.com/",
+    "sources": ["https://tv.apple.com/"]
+  },
+  {
+    "id": "discovery-plus",
+    "name": "Discovery+",
+    "domains": ["discoveryplus.com", "discoveryplus.co.uk"],
+    "streaming_url": "https://www.discoveryplus.com/",
+    "sources": ["https://www.discoveryplus.com/"]
+  },
+  {
+    "id": "crunchyroll",
+    "name": "Crunchyroll",
+    "domains": ["crunchyroll.com", "crunchyrollcdn.com", "vrv.co", "funimation.com"],
+    "streaming_url": "https://www.crunchyroll.com/",
+    "sources": ["https://help.crunchyroll.com/hc/en-us/articles/43269031827092-Crunchyroll-isn-t-loading-for-me-how-do-I-fix-it"]
+  },
+  {
+    "id": "twitch",
+    "name": "Twitch",
+    "domains": ["twitch.tv", "twitchcdn.net", "ttvnw.net", "jtvnw.net"],
+    "streaming_url": "https://www.twitch.tv/",
+    "sources": ["https://www.twitch.tv/"]
+  },
+  {
+    "id": "bbc-iplayer",
+    "name": "BBC / iPlayer",
+    "domains": ["bbc.co.uk", "bbc.com", "bbci.co.uk", "bbc.net.uk"],
+    "streaming_url": "https://www.bbc.co.uk/iplayer",
+    "sources": ["https://www.bbc.co.uk/iplayer"]
+  },
+  {
+    "id": "dazn",
+    "name": "DAZN",
+    "domains": ["dazn.com", "dazn-api.com", "daznfeeds.com", "daznservices.com"],
+    "streaming_url": "https://www.dazn.com/",
+    "sources": ["https://www.dazn.com/"]
+  },
+  {
+    "id": "bilibili",
+    "name": "Bilibili",
+    "domains": ["bilibili.com", "bilivideo.com", "bilivideo.cn", "biliapi.net", "biliapi.com", "biliimg.com", "hdslb.com", "b23.tv"],
+    "streaming_url": "https://www.bilibili.com/",
+    "sources": ["https://www.bilibili.com/"]
   },
   {
     "id": "google",
@@ -57,16 +154,19 @@
   {
     "id": "tiktok",
     "name": "TikTok",
+    "probe_url": "https://www.tiktok.com/",
     "domains": ["tiktok.com", "tiktokv.com", "tiktokcdn.com", "byteoversea.com", "ibytedtos.com", "muscdn.com"]
   },
   {
     "id": "meta",
     "name": "Meta / Instagram / WhatsApp",
+    "probe_url": "https://www.instagram.com/",
     "domains": ["facebook.com", "facebook.net", "fb.com", "fbcdn.net", "fbsbx.com", "instagram.com", "cdninstagram.com", "whatsapp.com", "whatsapp.net", "threads.net", "threads.com"]
   },
   {
     "id": "reddit",
     "name": "Reddit",
+    "probe_url": "https://www.reddit.com/",
     "domains": ["reddit.com", "redd.it", "redditmedia.com", "redditstatic.com", "redditspace.com"]
   },
   {

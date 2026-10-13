@@ -218,9 +218,12 @@ kind = "http_connect"
 addr = "127.0.0.1:18888"
 ```
 
-Switching country usually means recreating the Gluetun container on the same
-local proxy port. It does not require a V2Ray/Xray restart, and the sidecar only
-needs config hot reload if the outbound tag or rules change.
+The helper returns JSON with the actual `proxy` address and `container` name.
+Use that address in your outbound: an existing country exit can use a different
+port from the preferred port passed on the command line. Healthy exits are
+reused per country; changing country creates or reuses a separate cached exit.
+Changing the OpenVPN protocol for an existing country requires retiring its
+unused exit first. V2Ray/Xray does not need a restart for these route changes.
 
 ## Web UI
 
@@ -229,7 +232,7 @@ The optional web UI has two parts:
 - Stats dashboard: reads `stats.jsonl` and renders `index.html` plus
   `stats.json`.
 - Routing control page: edits a managed block in `config.toml`, starts or
-  recreates a Gluetun/NordVPN HTTP CONNECT container, and checks `ip.sb`
+  reuses a Gluetun/NordVPN HTTP CONNECT exit, and checks `ip.sb`
   through the sidecar.
 
 Install the UI after installing the sidecar:
@@ -286,13 +289,16 @@ Using the routing control page:
    names, and country codes when the browser supports region names.
 3. Choose OpenVPN UDP or TCP.
 4. Click `Apply Route`.
-5. Click `Check ip.sb` to see the current sidecar exit IP.
+5. Click `Check ip.sb` to see the current sidecar exit IP, country, country code,
+   and city when available. A fallback looks up the measured IP and labels
+   its source, rather than assuming different domains share an exit.
 6. Click `Clear UI Rules` to remove only the UI-managed rules from
    `config.toml`.
 
 Applying or clearing UI rules does not restart V2Ray/Xray. The sidecar picks up
-valid config changes through hot reload. Changing the Gluetun country may
-recreate the Gluetun container behind the same localhost proxy port.
+valid config changes through hot reload. Country exits retain their actual
+local proxy ports. Clearing UI rules retains the reusable exit; unused legacy
+duplicates are removed only without routing references or active connections.
 
 ## Stats
 
@@ -315,7 +321,7 @@ python3 ./deploy/v2ray-sidecar-stats.py errors --top 30 --sort errors
 
 The dashboard's `Top Services`, the CLI's `service` mode, and the routing
 profiles use the same domain catalog: [`deploy/service-domains.json`](deploy/service-domains.json).
-It includes 24 services, such as GitHub, X/Twitter, ChatGPT, Claude, YouTube,
+It includes 37 services, such as GitHub, X/Twitter, ChatGPT, Claude, YouTube,
 Netflix, Telegram, Discord, Meta, Spotify, Steam, Apple, Microsoft, Slack,
 Zoom, Dropbox, and Docker. For example, `github.com`, `githubusercontent.com`,
 `githubassets.com`, `github.io`, and their subdomains all appear as `GitHub`.
@@ -337,4 +343,48 @@ refresh and CLI report use the new grouping. Restart only
 Existing routing rules are unchanged until you apply a profile.
 
 Run the grouping tests with `python3 -m unittest discover -s tests -v`.
+
+## Streaming Checks And Exit Reuse
+
+Choose a streaming service and country in the routing page, then click the
+streaming test button. Netflix, HBO Max, Disney+, Hulu, Prime Video, Paramount+,
+Peacock, Apple TV+, Discovery+, Crunchyroll, Twitch, BBC/iPlayer, DAZN, Bilibili,
+and YouTube are supported, along with TikTok, Reddit, X, Instagram, ChatGPT,
+and Claude web probes. The common-services button shows TikTok, Disney+,
+Netflix, YouTube, Prime Video, Reddit, ChatGPT, HBO Max, and Claude as columns,
+with status, region, and transport rows. An `(IP)` region uses IP geolocation,
+not a country returned by that service. The transport is VPN/TCP, not an
+unverified claim about native or DNS unlocking. Tests run in one background queue, reuse that
+country's exit, and do not apply routing rules. Netflix also accepts up to four
+title IDs or Netflix links and reports public detail-page visibility.
+Netflix redirects and current HTML headings are used as evidence; BBC/iPlayer
+also probes its public media-selection endpoint for explicit geography errors.
+
+Results separate IP geolocation, service-reported country, homepage access,
+region errors, browser challenges, and public title visibility. Anonymous
+probes do not verify paid playback, account entitlements, DRM, or the complete
+regional catalog. HTTP 200 alone is not proof of streaming access. Methods
+reference [RegionRestrictionCheck](https://github.com/lmc999/RegionRestrictionCheck),
+without bundling its script or account cookies. Requests use the selected
+localhost HTTP CONNECT proxy, are limited to 128 KiB/s, and test TCP/IPv4;
+the sidecar's direct UDP/QUIC path is outside this test.
+
+The UI and CLI share a process lock to prevent duplicate country containers.
+Existing exits retain their container ID and proxy port; stopped exits are
+restarted. Only unreferenced exits without active TCP connections can be
+removed for duplicate cleanup or cache capacity. A protocol mismatch is
+reported instead of silently replacing a country's active exit. New exits
+have a 128 MiB memory limit and use the installed Gluetun image. Configure
+pool defaults with `SIDECAR_MAX_VPN_COUNTRIES=3`,
+`SIDECAR_VPN_MIN_AVAILABLE_KB=163840`, and
+`SIDECAR_EXIT_STATE_DIR=/var/lib/v2ray-egress-sidecar-exits`.
+
+Command-line probes through an existing exit:
+
+```bash
+python3 ./deploy/sidecar_streaming.py netflix --proxy http://127.0.0.1:18888 --country "United States"
+python3 ./deploy/sidecar_streaming.py hbo-max --proxy http://127.0.0.1:18888
+```
+
+After upgrading, restart only `v2ray-egress-sidecar-admin-api.service`.
 

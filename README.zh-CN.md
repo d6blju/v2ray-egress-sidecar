@@ -185,7 +185,10 @@ kind = "http_connect"
 addr = "127.0.0.1:18888"
 ```
 
-切换国家通常是重建同一个本地端口后的 Gluetun 容器；如果 sidecar 里的规则和端口不变，不需要重启 V2Ray/Xray。
+辅助脚本返回 JSON，包含实际 `proxy` 地址和 `container` 名称。配置时请使用返回的
+地址：同国家已有出口会直接复用，端口可能与命令里的首选端口不同。切换国家会
+复用对应国家的缓存出口，或建立不同国家的出口。更改已有国家的 OpenVPN 协议时，
+需要先释放其闲置出口。普通路由变更不需要重启 V2Ray/Xray。
 
 ## Web 界面
 
@@ -246,10 +249,13 @@ https://your-domain.example/sidecar-stats/control.html
 2. 选择 NordVPN 国家。国家搜索支持中文、英文和国家代码，取决于浏览器是否支持地区名称。
 3. 选择 OpenVPN UDP 或 TCP。
 4. 点击 `Apply Route`。
-5. 点击 `Check ip.sb` 查看当前 sidecar 出口 IP。
+5. 点击 `Check ip.sb` 查看当前 sidecar 出口 IP、中文国家、国家代码，以及可用的城市。
+   地区查询失败时，会按实测 IP 使用备用查询并标明来源，不会假定其他域名也走相同出口。
 6. 点击 `Clear UI Rules` 只删除 UI 管理的规则，不删除手写规则。
 
-应用或清理 UI 规则不会重启 V2Ray/Xray。sidecar 会通过热加载读取有效配置。切换 Gluetun 国家可能会重建同一 localhost 代理端口背后的 Gluetun 容器。
+应用或清理 UI 规则不会重启 V2Ray/Xray。sidecar 会热加载有效配置，UI 写入复用
+出口的实际本机端口。清理规则后保留可复用容器。同国家的旧重复容器，只有在
+没有路由引用和活跃 TCP 连接时才会清理。
 
 ## 查看统计
 
@@ -271,7 +277,7 @@ python3 ./deploy/v2ray-sidecar-stats.py errors --top 30 --sort errors
 `avg_life` 表示平均连接/UDP association 存活时间，不是 ping 延迟。
 
 统计页面的 `Top Services`、命令行的 `service` 模式和路由界面的应用列表共用
-[`deploy/service-domains.json`](deploy/service-domains.json) 域名表。当前包含 24 个服务，
+[`deploy/service-domains.json`](deploy/service-domains.json) 域名表。当前包含 37 个服务，
 包括 GitHub、X/Twitter、ChatGPT、Claude、YouTube、Netflix、Telegram、Discord、
 Meta、Spotify、Steam、Apple、Microsoft、Slack、Zoom、Dropbox 和 Docker 等。
 例如 `github.com`、`githubusercontent.com`、`githubassets.com`、`github.io`
@@ -291,3 +297,40 @@ Python 公共模块，安装位置为 `/usr/local/lib/v2ray-egress-sidecar/`。
 直到在界面上重新应用对应的 profile。
 
 分类测试：`python3 -m unittest discover -s tests -v`。
+
+## 流媒体检测与出口复用
+
+在路由页选择服务和国家，点击“检测当前服务”。支持 Netflix、HBO Max、Disney+、
+Hulu、Prime Video、Paramount+、Peacock、Apple TV+、Discovery+、Crunchyroll、Twitch、
+BBC/iPlayer、DAZN、Bilibili 和 YouTube，以及 TikTok、Reddit、X、Instagram、ChatGPT
+和 Claude 网页探测。点击“检测常用服务”，以 TikTok、Disney+、Netflix、YouTube、
+Prime Video、Reddit、ChatGPT、HBO Max、Claude 为列，展示状态、地区和方式。
+地区旁的 `(IP)` 表示 IP 数据库国家，而不是服务返回的国家；方式显示 VPN/TCP，
+不会把未经检测的原生或 DNS 解锁当成结论。检测通过后台单线程队列运行，复用国家出口，
+不应用转发规则。Netflix 可输入最多四个片名 ID 或 Netflix 链接，检测公开详情页
+是否可见。
+Netflix 检测使用服务返回的地区跳转和当前 HTML 标题作为证据；BBC/iPlayer
+还检测公开媒体选择接口中的明确地区错误。
+
+结果分别展示 IP 数据库地区、服务识别地区、首页访问、地区限制、浏览器验证和
+片名页面可见性。匿名检测不能确认订阅权限、DRM、真实播放或完整地区片库；
+HTTP 200 不代表能播放。检测方法参考
+[RegionRestrictionCheck](https://github.com/lmc999/RegionRestrictionCheck)，项目没有
+捆绑其脚本或账号 Cookie。请求通过所选本机 HTTP CONNECT 出口，限速 128 KiB/s，
+测试 TCP/IPv4；sidecar 目前直出的 UDP/QUIC 不在检测范围内。
+
+UI 和命令行共用跨进程锁，防止并发创建同国家容器。复用时保留容器 ID 和实际
+端口；已停止的容器直接启动。去重或缓存容量清理，只删除没有路由引用和活跃
+TCP 连接的闲置容器。协议不匹配会报错，不会自动替换正在使用的出口。新容器
+限制为 128 MiB 内存，使用本机已有的 Gluetun 镜像。可通过环境变量调整缓存限制：
+`SIDECAR_MAX_VPN_COUNTRIES=3`、`SIDECAR_VPN_MIN_AVAILABLE_KB=163840`、
+`SIDECAR_EXIT_STATE_DIR=/var/lib/v2ray-egress-sidecar-exits`。
+
+通过现有出口执行命令行检测：
+
+```bash
+python3 ./deploy/sidecar_streaming.py netflix --proxy http://127.0.0.1:18888 --country "United States"
+python3 ./deploy/sidecar_streaming.py hbo-max --proxy http://127.0.0.1:18888
+```
+
+升级后只重启管理 API：`sudo systemctl restart v2ray-egress-sidecar-admin-api.service`。

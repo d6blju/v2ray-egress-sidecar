@@ -12,7 +12,10 @@ h1{font-size:20px;margin:0}.sub{color:var(--muted);font-size:12px;margin-top:4px
 .grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(320px,.9fr);gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;min-width:0}.row{display:grid;gap:6px;margin-bottom:12px}label{font-weight:600;font-size:12px;color:var(--muted)}select,textarea,input{width:100%;border:1px solid var(--line);border-radius:6px;padding:9px;background:#fff;color:var(--text);font:inherit}textarea{min-height:178px;resize:vertical}.country-picker{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,.75fr);gap:8px}.hint{color:var(--muted);font-size:12px}.checks{display:flex;gap:14px;flex-wrap:wrap}.checks label{font-weight:500;color:var(--text)}.checks input{width:auto;margin-right:6px}
 button{border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;padding:9px 12px;cursor:pointer;font-weight:650}button.secondary{background:#fff;color:var(--text);border-color:var(--line)}button.danger{border-color:var(--bad);background:#fff;color:var(--bad)}button:disabled{opacity:.55;cursor:not-allowed}.actions{display:flex;gap:8px;flex-wrap:wrap}
 .status{white-space:pre-wrap;border:1px solid var(--line);border-radius:8px;background:#fbfcfa;padding:12px;min-height:110px}.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:999px;padding:5px 8px;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}.chip:hover{border-color:var(--accent);color:var(--accent);background:#f3fbf9}.chip:active{background:#e6f5f2}.muted{color:var(--muted)}.bad{color:var(--bad)}
+.streaming{margin-top:24px;padding-top:16px;border-top:1px solid var(--line)}.streaming h2{font-size:16px;margin:0}.stream-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.stream-head a{color:var(--accent);font-size:12px}.stream-input{margin:12px 0;max-width:650px}.stream-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:14px 0}.stream-facts dt{font-size:12px;color:var(--muted)}.stream-facts dd{margin:4px 0 0;font-weight:600;overflow-wrap:anywhere}.stream-table{overflow:auto}.stream-table table{width:100%;border-collapse:collapse;min-width:560px}.stream-table th,.stream-table td{text-align:left;border-bottom:1px solid var(--line);padding:8px;overflow-wrap:anywhere}.stream-table th{font-size:12px;color:var(--muted)}[hidden]{display:none!important}
+.service-matrix{overflow:auto;margin-top:14px}.service-matrix table{border-collapse:collapse;table-layout:fixed;min-width:1080px;width:100%;font-size:13px}.service-matrix th,.service-matrix td{border:1px solid var(--line);padding:9px 6px;text-align:center;overflow-wrap:anywhere}.service-matrix th:first-child{width:64px;background:#f0f3f2}.service-matrix thead th{background:#f0f3f2}.probe-good{color:#11633a;background:#e7f5eb}.probe-bad{color:#a52b25;background:#fff0ee}.probe-warn{color:#986214;background:#fff7e6}
 @media(max-width:900px){.grid{grid-template-columns:1fr}.country-picker{grid-template-columns:1fr}.wrap{padding:12px}}
+@media(max-width:600px){.stream-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -38,6 +41,13 @@ button{border:1px solid var(--accent);background:var(--accent);color:#fff;border
   <div class="row"><label>Result</label><div id="result" class="status">Idle</div></div>
 </div>
 </section>
+<section id="streaming-panel" class="streaming" hidden>
+  <div class="stream-head"><h2>流媒体、自媒体与 AI 检测</h2><div class="actions"><a href="https://github.com/lmc999/RegionRestrictionCheck" target="_blank" rel="noopener">检测方法参考</a><button id="stream-test" class="secondary">检测当前服务</button><button id="matrix-test" class="secondary">检测常用服务</button></div></div>
+  <div id="stream-titles-row" class="row stream-input" hidden><label for="stream-titles">Netflix 片名 ID 或链接（可选，最多 4 个）</label><input id="stream-titles" placeholder="例如 70143836 或 https://www.netflix.com/title/70143836"></div>
+  <div id="stream-status" class="hint">尚未检测</div>
+  <div id="stream-result"></div>
+  <div id="matrix-result" class="service-matrix"></div>
+</section>
 <section class="panel" style="margin-top:16px">
   <div class="row"><label>Observed recent domains</label><div id="observed" class="chips"><span class="muted">Loading...</span></div></div>
 </section>
@@ -48,6 +58,8 @@ const $=id=>document.getElementById(id);
 const basePath=location.pathname.includes('/sidecar-stats/')?'/sidecar-stats/':'./';
 const regionNames=(typeof Intl!=='undefined'&&Intl.DisplayNames)?new Intl.DisplayNames(['zh-CN'],{type:'region'}):null;
 let allCountryOptions=[];
+let streamJob=null, streamTimer=null;
+let streamPollGeneration=0;
 function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function url(path){return basePath+path.replace(/^\/+/,'')}
 async function fetchJson(path, options){
@@ -58,7 +70,7 @@ async function fetchJson(path, options){
   const preview=text.replace(/\s+/g,' ').slice(0,180);
   throw new Error(`API returned non-JSON HTTP ${res.status}: ${preview}`);
  }
- if(!res.ok||!data||data.ok===false)throw new Error((data&&data.error)||`HTTP ${res.status}`);
+ if(!res.ok||!data||data.ok===false)throw new Error(data?.error?(data.error+(data.details?': '+String(data.details):'')):`HTTP ${res.status}`);
  return data;
 }
 function setResult(text,bad=false){$('result').className='status '+(bad?'bad':'');$('result').textContent=text}
@@ -86,7 +98,10 @@ function renderCountryOptions(keepValue){
 }
 function updateCountryHint(){
  const c=allCountryOptions.find(x=>x.name===$('country').value);
- if(c&&!($('country-search').value||'').trim())$('country-hint').textContent=`已选择：${countryLabel(c)} / ${c.name}`;
+ if(c&&!($('country-search').value||'').trim()){
+  const cached=(state.exits||[]).filter(x=>x.country===c.name&&x.status==='running');
+  $('country-hint').textContent=`已选择：${countryLabel(c)} / ${c.name}${cached.length?' · 已有可复用出口':''}`;
+ }
 }
 function renderCurrent(){
  const s=state.state||{};
@@ -96,6 +111,7 @@ function renderCurrent(){
  if(s.profile)lines.push(`profile: ${s.profile}`);
  if(s.proxy)lines.push(`proxy: ${s.proxy}`);
  if(s.gluetun)lines.push(`gluetun: ${s.gluetun.status||'?'} / ${s.gluetun.health||'?'}`);
+ if(s.container)lines.push(`container: ${s.container}`);
  if(s.domains&&s.domains.length)lines.push(`domains:\n  ${s.domains.join('\n  ')}`);
  $('current').textContent=lines.join('\n');
 }
@@ -116,6 +132,7 @@ function renderState(){
  $('include-ip').checked=current.include_ip_sb!==false;
  $('openvpn-tcp').checked=current.protocol==='tcp';
  renderCurrent();
+ updateStreamingPanel();
 }
 function renderObserved(){
  const rows=((stats&&stats.windows&&stats.windows['1h']&&stats.windows['1h'].domains)||[]).slice(0,40);
@@ -127,6 +144,7 @@ function renderObserved(){
    cur.add(d);
    putDomains([...cur]);
    $('profile').value='custom';
+   updateStreamingPanel();
  });
 }
 async function load(){
@@ -135,17 +153,101 @@ async function load(){
    fetchJson('stats.json?ts='+Date.now(),{cache:'no-store'}).catch(()=>null)
  ]);
  state=s; stats=j; renderState(); renderObserved();
+ if(s.country_refreshing)setTimeout(refreshCountries,3000);
 }
-$('profile').onchange=()=>{const p=profileById($('profile').value); if(p)putDomains(p.domains)}
-$('country-search').oninput=()=>renderCountryOptions();
-$('country').onchange=()=>updateCountryHint();
+async function refreshCountries(){
+ try{
+  const data=await fetchJson('api/state',{cache:'no-store'}), selected=$('country').value;
+  state.country_options=data.country_options;state.countries=data.countries;
+  allCountryOptions=countryOptions().sort((a,b)=>countryLabel(a).localeCompare(countryLabel(b),'zh-CN'));
+  renderCountryOptions(selected);updateCountryHint();
+  $('meta').textContent=`已加载 ${allCountryOptions.length} 个 NordVPN 国家`;
+  if(data.country_refreshing)setTimeout(refreshCountries,5000);
+ }catch(e){}
+}
+const streamLabels={homepage_accessible:'首页可访问',region_unavailable:'地区不可用',http_refused:'请求被拒绝',challenge:'需要浏览器验证',network_error:'网络请求失败',page_unknown:'无法判断页面',title_visible:'公开详情页可见',title_unavailable:'公开详情页不可见',title_unknown:'未能判断片名',manifest_available:'公开媒体接口可达'};
+function matchesStream(job){return job&&(job.profile==='matrix'||job.profile===$('profile').value)&&job.country===$('country').value&&job.protocol===($('openvpn-tcp').checked?'tcp':'udp')}
+function regionText(code){if(!code)return '未识别';try{return regionNames?`${regionNames.of(code)} (${code})`:code}catch(e){return code}}
+function formatIp(data){return data?.ok?`IP: ${data.ip}\n国家: ${data.country_code?regionText(data.country_code):(data.country||'未识别')}${data.city?'\n城市: '+data.city:''}${data.country_source?'\n地区来源: '+data.country_source:''}`:`检测失败: ${data?.error||'未知错误'}`}
+const matrixNames={'openai-chatgpt':'ChatGPT','claude-anthropic':'Claude','prime-video':'Amazon PV'};
+function renderMatrix(reports){
+ const items=reports||[],statuses=items.map(r=>r.homepage.status), row=(name,cells)=>`<tr><th>${name}</th>${cells.map(c=>`<td>${c}</td>`).join('')}</tr>`;
+ const stateCells=items.map((r,i)=>`<span class="${statuses[i]==='homepage_accessible'?'probe-good':['region_unavailable','http_refused'].includes(statuses[i])?'probe-bad':'probe-warn'}">${esc(streamLabels[statuses[i]]||statuses[i])}${r.homepage.status==='http_refused'?' '+r.homepage.http_status:''}</span>`);
+ $('matrix-result').innerHTML=items.length?'<table><thead>'+row('服务商',items.map(r=>esc(matrixNames[r.profile]||r.service)))+'</thead><tbody>'+row('状态',stateCells)+row('地区',items.map(r=>{const code=r.homepage.region||(r.titles||[]).find(t=>t.region)?.region;return `<span title="${esc(code?'服务返回的地区':'出口 IP 数据库地区')}" >${esc(code||r.geoip.country_code||'?')}${code?'':' (IP)'}</span>`}))+row('方式',items.map(()=> 'VPN / TCP'))+'</tbody></table>':'';
+}
+function renderStreamingJob(job){
+ if(!matchesStream(job))return;
+ $('stream-test').disabled=['queued','running'].includes(job.status)||!profileById($('profile').value)?.streaming;
+ $('matrix-test').disabled=['queued','running'].includes(job.status);
+ if(job.status==='queued'||job.status==='running'){
+  $('stream-status').textContent=job.status==='queued'?'排队中':'检测中';return;
+ }
+ if(job.status!=='done'){$('stream-status').textContent=job.error||'检测未完成';return}
+ const r=job.result;
+ if(r.reports){
+  $('stream-status').textContent=`检测于 ${new Date(r.finished_at*1000).toLocaleString('zh-CN')} · ${countryLabel(job.country)} · ${r.exit.reused?'复用已有出口':'新建出口'} · ${r.transport}`;
+  $('stream-result').textContent='真实播放及账号权限：待验证';renderMatrix(r.reports);return;
+ }
+ const h=r.homepage, region=h.region||(r.titles||[]).find(x=>x.region)?.region;
+ $('stream-status').textContent=`检测于 ${new Date(r.finished_at*1000).toLocaleString('zh-CN')} · ${r.exit.reused?'复用已有出口':'新建出口'} · ${r.transport}`;
+ const facts=[['出口 IP',r.geoip.ip||'未识别'],['IP 数据库国家',regionText(r.geoip.country_code)],['服务识别地区',regionText(region)],['首页',`${streamLabels[h.status]||h.status} (HTTP ${h.http_status})`],['代理节点',r.exit.container||r.exit.proxy],['真实播放','待账号及播放器验证']];
+ if(r.eligibility)facts.push(['地区接口',`${streamLabels[r.eligibility.status]||r.eligibility.status} (HTTP ${r.eligibility.http_status})`]);
+ $('stream-result').innerHTML='<dl class="stream-facts">'+facts.map(([label,value])=>`<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')+'</dl>'+
+ ((r.titles||[]).length?'<div class="stream-table"><table><thead><tr><th>片名 / ID</th><th>公开片库探测</th><th>地区</th><th>播放</th></tr></thead><tbody>'+r.titles.map(t=>`<tr><td>${esc(t.title||t.title_id)}<br><span class="muted">${esc(t.title_id)}</span></td><td>${esc(streamLabels[t.status]||t.status)} · HTTP ${t.http_status}</td><td>${esc(regionText(t.region))}</td><td>未验证</td></tr>`).join('')+'</tbody></table></div>':'');
+}
+function updateStreamingPanel(){
+ const p=profileById($('profile').value);
+ $('streaming-panel').hidden=false;
+ $('stream-titles-row').hidden=p?.id!=='netflix';
+ const job=matchesStream(streamJob)?streamJob:(state.streaming_jobs||[]).find(matchesStream);
+ $('stream-result').innerHTML='';$('stream-status').textContent='尚未检测';$('stream-test').disabled=false;
+ $('matrix-result').innerHTML='';$('matrix-test').disabled=false;
+ if(job){
+  renderStreamingJob(job);
+  if(['queued','running'].includes(job.status)){
+   if(streamTimer)clearTimeout(streamTimer);
+   const generation=++streamPollGeneration;pollStreaming(job.id,generation);
+  }
+ }
+ if(!p?.streaming)$('stream-test').disabled=true;
+}
+async function pollStreaming(identifier,generation=streamPollGeneration){
+ try{
+  const data=await fetchJson('api/streaming/'+identifier,{cache:'no-store'});
+  if(generation!==streamPollGeneration)return;
+  streamJob=data.job;
+  state.streaming_jobs=[streamJob,...(state.streaming_jobs||[]).filter(x=>x.id!==identifier)];
+  renderStreamingJob(streamJob);
+  if(['queued','running'].includes(streamJob.status))streamTimer=setTimeout(()=>pollStreaming(identifier,generation),2000);
+ }catch(e){if(generation!==streamPollGeneration)return;$('stream-status').textContent=String(e);$('stream-test').disabled=!profileById($('profile').value)?.streaming;$('matrix-test').disabled=false}
+}
+$('stream-test').onclick=async()=>{
+ $('stream-test').disabled=true;$('matrix-test').disabled=true;$('stream-status').textContent='提交检测';$('stream-result').innerHTML='';$('matrix-result').innerHTML='';
+ try{
+  const body={profile:$('profile').value,country:$('country').value,protocol:$('openvpn-tcp').checked?'tcp':'udp',titles:$('profile').value==='netflix'?[$('stream-titles').value]:[]};
+  const data=await fetchJson('api/streaming/test',{method:'POST',headers:{'Content-Type':'application/json','X-Sidecar-Admin':'1'},body:JSON.stringify(body)});
+  if(streamTimer)clearTimeout(streamTimer);streamJob=data.job;renderStreamingJob(streamJob);pollStreaming(streamJob.id,++streamPollGeneration);
+ }catch(e){$('stream-status').textContent=String(e);$('stream-test').disabled=!profileById($('profile').value)?.streaming;$('matrix-test').disabled=false}
+};
+$('matrix-test').onclick=async()=>{
+ $('matrix-test').disabled=true;$('stream-test').disabled=true;$('stream-status').textContent='提交常用服务检测';$('matrix-result').innerHTML='';$('stream-result').innerHTML='';
+ try{
+  const body={profile:'matrix',country:$('country').value,protocol:$('openvpn-tcp').checked?'tcp':'udp',titles:[$('stream-titles').value]};
+  const data=await fetchJson('api/streaming/test',{method:'POST',headers:{'Content-Type':'application/json','X-Sidecar-Admin':'1'},body:JSON.stringify(body)});
+  if(streamTimer)clearTimeout(streamTimer);streamJob=data.job;renderStreamingJob(streamJob);pollStreaming(streamJob.id,++streamPollGeneration);
+ }catch(e){$('stream-status').textContent=String(e);$('stream-test').disabled=!profileById($('profile').value)?.streaming;$('matrix-test').disabled=false}
+};
+$('profile').onchange=()=>{const p=profileById($('profile').value); if(p)putDomains(p.domains);updateStreamingPanel()}
+$('country-search').oninput=()=>{renderCountryOptions();updateStreamingPanel()};
+$('country').onchange=()=>{updateCountryHint();updateStreamingPanel()};
+$('openvpn-tcp').onchange=()=>updateStreamingPanel();
 $('apply').onclick=async()=>{
  $('apply').disabled=true; setResult('Applying route. Starting or switching Gluetun can take about 1-2 minutes...');
  try{
   const body={profile:$('profile').value,country:$('country').value,domains:domainsFromText(),include_ip_sb:$('include-ip').checked,protocol:$('openvpn-tcp').checked?'tcp':'udp'};
   const data=await fetchJson('api/apply',{method:'POST',headers:{'Content-Type':'application/json','X-Sidecar-Admin':'1'},body:JSON.stringify(body)});
   state.state=data.state; renderCurrent();
-  setResult(`Applied.\ncountry: ${countryLabel(data.state.country)}\nip.sb via sidecar: ${data.ip_check&&data.ip_check.ok?data.ip_check.ip:JSON.stringify(data.ip_check)}\nbackup: ${data.backup}`);
+  setResult(`Applied.\ncountry: ${countryLabel(data.state.country)}\ncontainer: ${data.state.container}\nexit reused: ${data.exit_reused?'yes':'no'}\n${formatIp(data.ip_check)}\nbackup: ${data.backup}`);
  }catch(e){setResult(String(e),true)}
  finally{$('apply').disabled=false}
 };
@@ -161,7 +263,7 @@ $('check').onclick=async()=>{
  setResult('Checking api.ip.sb through sidecar SOCKS...');
  try{
   const data=await fetchJson('api/ipcheck',{cache:'no-store'});
-  setResult(data.ok?`ip.sb via sidecar: ${data.ip}`:`check failed: ${data.error}`,!data.ok);
+  setResult(formatIp(data),!data.ok);
  }catch(e){setResult(String(e),true)}
 };
 load().catch(e=>{setResult(String(e),true);$('meta').textContent='Load failed'});

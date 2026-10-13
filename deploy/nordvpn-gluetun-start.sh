@@ -15,7 +15,8 @@ Credentials:
     OPENVPN_USER=...
     OPENVPN_PASSWORD=...
 
-This starts a Gluetun container that exposes a localhost-only HTTP CONNECT proxy.
+Reuses an existing country exit or creates a localhost-only HTTP CONNECT proxy.
+The returned proxy port can differ from the preferred port.
 EOF
 }
 
@@ -28,8 +29,6 @@ TAG="$1"
 COUNTRY="$2"
 PROXY_PORT="$3"
 PROTOCOL="${4:-udp}"
-ENV_FILE="/etc/gluetun/nordvpn.env"
-CONTAINER="gluetun-${TAG}"
 
 case "${TAG}" in
   *[!a-zA-Z0-9_-]*|"")
@@ -46,37 +45,9 @@ case "${PROTOCOL}" in
     ;;
 esac
 
-if [[ ! -f "${ENV_FILE}" ]]; then
-  install -d -m 0700 /etc/gluetun
-  cat > "${ENV_FILE}" <<'EOF'
-OPENVPN_USER=
-OPENVPN_PASSWORD=
-EOF
-  chmod 0600 "${ENV_FILE}"
-  echo "created ${ENV_FILE}; fill in NordVPN manual setup credentials first" >&2
-  exit 1
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+HELPER="${SCRIPT_DIR}/sidecar_exits.py"
+if [[ ! -f "${HELPER}" ]]; then
+  HELPER=/usr/local/lib/v2ray-egress-sidecar/sidecar_exits.py
 fi
-
-if ! grep -q '^OPENVPN_USER=.' "${ENV_FILE}" || ! grep -q '^OPENVPN_PASSWORD=.' "${ENV_FILE}"; then
-  echo "fill OPENVPN_USER and OPENVPN_PASSWORD in ${ENV_FILE} first" >&2
-  exit 1
-fi
-
-docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
-docker run -d \
-  --name "${CONTAINER}" \
-  --cap-add=NET_ADMIN \
-  --device /dev/net/tun:/dev/net/tun \
-  --restart unless-stopped \
-  -p "127.0.0.1:${PROXY_PORT}:8888/tcp" \
-  --env-file "${ENV_FILE}" \
-  -e VPN_SERVICE_PROVIDER=nordvpn \
-  -e VPN_TYPE=openvpn \
-  -e OPENVPN_PROTOCOL="${PROTOCOL}" \
-  -e SERVER_COUNTRIES="${COUNTRY}" \
-  -e HTTPPROXY=on \
-  -e HTTPPROXY_LISTENING_ADDRESS=:8888 \
-  qmcgaw/gluetun:latest
-
-echo "started ${CONTAINER}: country=${COUNTRY} proxy=127.0.0.1:${PROXY_PORT}"
-echo "logs: docker logs -f ${CONTAINER}"
+exec python3 "${HELPER}" "${COUNTRY}" --preferred-port "${PROXY_PORT}" --protocol "${PROTOCOL}"
