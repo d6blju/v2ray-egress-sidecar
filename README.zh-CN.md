@@ -277,8 +277,8 @@ python3 ./deploy/v2ray-sidecar-stats.py errors --top 30 --sort errors
 `avg_life` 表示平均连接/UDP association 存活时间，不是 ping 延迟。
 
 统计页面的 `Top Services`、命令行的 `service` 模式和路由界面的应用列表共用
-[`deploy/service-domains.json`](deploy/service-domains.json) 域名表。当前包含 37 个服务，
-包括 GitHub、X/Twitter、ChatGPT、Claude、YouTube、Netflix、Telegram、Discord、
+[`deploy/service-domains.json`](deploy/service-domains.json) 域名表。当前包含 38 个服务，
+包括 GitHub、X/Twitter、ChatGPT、Claude、YouTube、Netflix、Binance、Telegram、Discord、
 Meta、Spotify、Steam、Apple、Microsoft、Slack、Zoom、Dropbox 和 Docker 等。
 例如 `github.com`、`githubusercontent.com`、`githubassets.com`、`github.io`
 及其子域名统一显示为 `GitHub`。同一服务、同一出口的连接数、字节、错误和平均

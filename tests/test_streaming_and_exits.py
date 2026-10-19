@@ -86,6 +86,9 @@ class FixturePool(ExitPool):
     def _available_memory(self):
         return 512000
 
+    def _host_cpu_percent(self):
+        return 0.0
+
     def _free_port(self, preferred, exits):
         used = {item["port"] for item in exits}
         return preferred if preferred not in used else 18893

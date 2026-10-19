@@ -321,8 +321,8 @@ python3 ./deploy/v2ray-sidecar-stats.py errors --top 30 --sort errors
 
 The dashboard's `Top Services`, the CLI's `service` mode, and the routing
 profiles use the same domain catalog: [`deploy/service-domains.json`](deploy/service-domains.json).
-It includes 37 services, such as GitHub, X/Twitter, ChatGPT, Claude, YouTube,
-Netflix, Telegram, Discord, Meta, Spotify, Steam, Apple, Microsoft, Slack,
+It includes 38 services, such as GitHub, X/Twitter, ChatGPT, Claude, YouTube,
+Netflix, Binance, Telegram, Discord, Meta, Spotify, Steam, Apple, Microsoft, Slack,
 Zoom, Dropbox, and Docker. For example, `github.com`, `githubusercontent.com`,
 `githubassets.com`, `github.io`, and their subdomains all appear as `GitHub`.
 Connections, bytes, errors, and average lifetime are combined per service and

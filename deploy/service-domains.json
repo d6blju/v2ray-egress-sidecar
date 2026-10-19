@@ -123,6 +123,12 @@
     "sources": ["https://www.bilibili.com/"]
   },
   {
+    "id": "binance",
+    "name": "Binance",
+    "probe_url": "https://www.binance.com/",
+    "domains": ["binance.com", "binance.com.cn", "binance.us", "binance.net", "binance.info", "binance.cloud", "binance.org", "binance.me", "binanceapps.com", "binanceapi.com", "binancefuture.com"]
+  },
+  {
     "id": "google",
     "name": "Google",
     "domains": ["google.com", "googleapis.com", "gstatic.com", "googleusercontent.com", "ggpht.com", "gvt1.com", "gvt2.com", "googleadservices.com", "googlesyndication.com", "google-analytics.com", "googletagmanager.com", "doubleclick.net", "doubleclick-cn.net", "withgoogle.com", "gmail.com", "googlemail.com", "g.co", "google.com.hk", "google.co.jp", "google.co.uk", "google.com.tw", "google.com.sg", "google.com.au", "google.de", "google.fr"],

@@ -120,13 +120,24 @@ class ExitPool:
             pass
         return 0
 
+    @staticmethod
+    def _cpu_totals():
+        with open("/proc/stat", encoding="utf-8") as info:
+            fields = next(line for line in info if line.startswith("cpu ")).split()[1:]
+        values = [int(value) for value in fields]
+        return sum(values), values[3] + values[4]
+
     def _host_cpu_percent(self):
         try:
-            with open("/proc/loadavg", encoding="utf-8") as info:
-                load = float(info.read().split()[0])
-            return load / max(1, os.cpu_count() or 1) * 100.0
-        except (OSError, ValueError, IndexError):
-            return 0.0
+            total_before, idle_before = self._cpu_totals()
+            time.sleep(0.2)
+            total_after, idle_after = self._cpu_totals()
+            total_delta = total_after - total_before
+            busy_delta = (total_after - idle_after) - (total_before - idle_before)
+            return max(0.0, min(100.0, busy_delta * 100.0 / total_delta)) if total_delta else 100.0
+        except (OSError, StopIteration, ValueError, IndexError):
+            # Refuse a new exit if the host CPU cannot be measured reliably.
+            return 100.0
 
     def _container_cpus(self):
         cpus = self.container_cpu_percent / 100.0 * max(1, os.cpu_count() or 1)
@@ -192,10 +203,11 @@ class ExitPool:
             if protected_ports is not None:
                 self._prune_duplicates(exits, protected)
             exits = self.list()
-            projected_cpu = self._host_cpu_percent() + self.container_cpu_percent
+            current_cpu = self._host_cpu_percent()
+            projected_cpu = current_cpu + self.container_cpu_percent
             if projected_cpu > self.max_host_cpu_percent:
                 raise RuntimeError("VPN exit capacity reached; host CPU would exceed %.0f%% (now %.1f%%, new exit %.1f%%)" %
-                                   (self.max_host_cpu_percent, self._host_cpu_percent(), self.container_cpu_percent))
+                                   (self.max_host_cpu_percent, current_cpu, self.container_cpu_percent))
             memory_floor = self.min_available_kb + self.container_memory_kb
             while len({item["country"].casefold() for item in exits}) >= self.max_countries or self._available_memory() < memory_floor:
                 unused = [item for item in exits if item["managed"] and item["port"] not in protected and not self.connected(item["port"])]
