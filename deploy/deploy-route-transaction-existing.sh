@@ -43,7 +43,7 @@ systemctl daemon-reload
 systemctl start v2ray-sidecar-admin-api.service
 ready=0
 for attempt in $(seq 1 20); do
-    if curl -fsS --max-time 5 http://127.0.0.1:18082/api/state -o "$backup/state-after.json"; then
+    if curl -fsS --max-time 5 http://127.0.0.1:18082/api/health -o "$backup/health-after.json"; then
         ready=1
         break
     fi

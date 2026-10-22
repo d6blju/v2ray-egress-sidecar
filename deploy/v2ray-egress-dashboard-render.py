@@ -196,6 +196,7 @@ def render_html():
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>V2Ray Egress Sidecar Stats</title>
+<script src="auth.js"></script>
 <style>
 :root{color-scheme:light;--bg:#f7f8f4;--panel:#fff;--text:#1d252c;--muted:#68717a;--line:#d9ded6;--accent:#0f766e;--warn:#a16207;--bad:#b42318}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
@@ -258,6 +259,7 @@ function render(){
  document.getElementById('diagnostics').style.whiteSpace='pre-wrap';
 }
 async function load(){
+ await SidecarAuth.ready();
  const res=await fetch('stats.json?ts='+Date.now(),{cache:'no-store'});
  data=await res.json(); render();
 }

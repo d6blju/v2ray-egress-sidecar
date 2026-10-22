@@ -26,3 +26,5 @@ v2ray-[0-9]*.json
 route-transaction.json
 route-last-result.json
 route-last-failure.json
+auth-users.json
+auth.lock

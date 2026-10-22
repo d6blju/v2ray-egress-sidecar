@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_streaming_and_exits import DEPLOY, DockerFixture, FixturePool, container
 from sidecar_streaming_jobs import StreamingJobs
+from sidecar_auth import AuthManager
 
 spec = importlib.util.spec_from_file_location("control_api", os.path.join(DEPLOY, "v2ray-egress-admin-api.py"))
 admin = importlib.util.module_from_spec(spec)
@@ -42,11 +43,15 @@ class ControlAPITests(unittest.TestCase):
             output.write(CONFIG)
         self.docker = DockerFixture([container("gluetun-bd", port=18891)])
         self.pool = FixturePool(self.docker, self.directory.name)
+        self.auth = AuthManager(self.directory.name, secure=False, iterations=1000)
+        self.auth.set_password('test', 'password')
+        self.token = self.auth.create('test')
         self.patches = [
             patch.object(admin, "CONFIG_PATH", self.config),
             patch.object(admin, "STATE_DIR", self.directory.name),
             patch.object(admin, "STATE_PATH", os.path.join(self.directory.name, "state.json")),
             patch.object(admin, "EXIT_POOL", self.pool),
+            patch.object(admin, 'AUTH', self.auth),
             patch.object(admin, "country_options", return_value=[{"name": "Bangladesh", "code": "BD"}]),
             patch.object(admin, "gluetun_status", return_value={"container": "gluetun-bd", "status": "running", "health": "healthy"}),
             patch.object(admin, "check_ip", return_value={"ok": True, "ip": "192.0.2.25"}),
@@ -76,10 +81,12 @@ class ControlAPITests(unittest.TestCase):
 
     def request(self, path, payload=None, authorized=True):
         headers = {}
+        if authorized:
+            headers['Cookie'] = 'sidecar_session=' + self.token
         if payload is not None:
             headers["Content-Type"] = "application/json"
             if authorized:
-                headers["X-Sidecar-Admin"] = "1"
+                headers['X-CSRF-Token'] = self.auth.csrf(self.token)
         body = json.dumps(payload).encode() if payload is not None else None
         request = Request(self.base + path, data=body, headers=headers)
         try:
@@ -126,7 +133,7 @@ class ControlAPITests(unittest.TestCase):
 
     def test_missing_admin_header_and_invalid_title_cannot_create_exits(self):
         status, data = self.request("/api/streaming/test", {}, authorized=False)
-        self.assertEqual(status, 403)
+        self.assertEqual(status, 401)
         status, data = self.request("/api/streaming/test", {"profile": "netflix", "country": "Bangladesh", "titles": ["https://127.0.0.1/private"]})
         self.assertEqual(status, 500)
         self.assertEqual(self.jobs.recent(), [])

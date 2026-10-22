@@ -16,6 +16,11 @@ It is also not affiliated with the V2Ray or Xray projects.
 
 ## Features
 
+- Session-based management login, salted password hashes, CSRF protection,
+  persistent login throttling, and logout/session revocation. Existing Nginx
+  Basic Auth credentials can migrate without changing the account or password.
+  See [authentication and safe upgrades](docs/authentication.md).
+
 - SOCKS5 TCP `CONNECT` inbound for V2Ray/Xray.
 - SOCKS5 `UDP ASSOCIATE` support for direct UDP relay.
 - Per-domain JSONL traffic stats: connections, uplink bytes, downlink bytes,
@@ -254,14 +259,14 @@ This installs:
 The admin API listens on localhost only:
 
 ```text
-http://127.0.0.1:18082/api/state
+http://127.0.0.1:18082/api/health
 ```
 
 Use nginx to expose it. Start with the example:
 
 ```bash
 sudo cp /etc/nginx/conf.d/v2ray-egress-sidecar-ui.conf.example /etc/nginx/conf.d/v2ray-egress-sidecar-ui.conf
-sudo htpasswd -c /etc/nginx/.htpasswd-v2ray-egress-sidecar sidecar
+sudo htpasswd -cB /etc/nginx/.htpasswd-v2ray-egress-sidecar sidecar
 sudo nginx -t
 sudo systemctl reload nginx
 ```
@@ -281,6 +286,16 @@ https://your-domain.example/sidecar-stats/control.html
 
 Keep the public UI and API behind Basic Auth. Do not expose
 `/sidecar-stats/api/` without authentication.
+
+Before exposing the UI, configure `SIDECAR_HTPASSWD_FILE` to the existing Nginx
+password file, `SIDECAR_COOKIE_SECURE=1` and `SIDECAR_COOKIE_PATH=/sidecar-stats/`
+in the API service environment. Install the static session gate with
+`sidecar_nginx_auth.py`, validate with `nginx -t`, then gracefully reload Nginx.
+Use `/api/health` for readiness; all other management data requires a session.
+Sessions expire after 30 minutes idle / 12 hours total and survive API restarts.
+Changing a password revokes its sessions. Never commit auth state, password files,
+session databases, keys or server backups. Full installation, migration and
+automation examples: [Management Authentication](docs/authentication.md).
 
 Using the routing control page:
 

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="same-origin">
+<title>登录 · V2Ray Egress Sidecar</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f7f8f4;color:#1d252c;font:14px/1.5 system-ui,sans-serif;display:grid;place-items:center;padding:20px}main{width:100%;max-width:380px}h1{font-size:22px;margin:0 0 24px}form{display:grid;gap:14px}label{display:grid;gap:6px}input,button{font:inherit;min-height:44px;padding:9px 12px;border:1px solid #bcc7c9;border-radius:6px}input{width:100%;background:white}button{background:#0f766e;color:white;cursor:pointer}button:disabled{opacity:.6}#error{color:#b42318;min-height:24px;overflow-wrap:anywhere}
+</style>
+<script src="auth.js"></script>
+</head>
+<body><main><h1>V2Ray Egress Sidecar</h1>
+<form id="login"><label>用户名<input name="username" autocomplete="username" maxlength="128" required></label>
+<label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+<button type="submit">登录</button><div id="error" role="alert"></div></form>
+</main>
+<script>
+const form=document.getElementById('login'), error=document.getElementById('error');
+SidecarAuth.ready().then(s=>{if(s.authenticated)location.replace('control.html')}).catch(e=>{error.textContent=String(e)});
+form.onsubmit=async e=>{e.preventDefault();const button=form.querySelector('button');button.disabled=true;error.textContent='';try{await SidecarAuth.login(form.elements.username.value,form.elements.password.value)}catch(e){form.elements.password.value='';error.textContent=String(e)}finally{button.disabled=false}};
+</script></body></html>

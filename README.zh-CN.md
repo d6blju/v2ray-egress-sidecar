@@ -2,6 +2,30 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+## 管理页面安全
+
+管理 API 已改为真实登录和服务端 Session，写操作（包括登录、退出）同时校验
+CSRF token、JSON 类型及请求来源，不再接受 `X-Sidecar-Admin` 作为认证。
+密码使用独立随机盐的 PBKDF2-HMAC-SHA256（600,000 次迭代），登录限流持久化。
+现有 Nginx Basic Auth 账号密码可以保持不变，首次验证后自动迁移密码验证信息；
+退出后需显式重新登录，不会悄悄利用浏览器缓存的 Basic Auth 自动登录。
+
+Session 默认闲置 30 分钟、最长 12 小时，登录后轮换 token，退出或修改密码立即
+撤销相关会话。Cookie 使用 HttpOnly、Secure、SameSite=Strict；CSRF token
+只保存在页面内存。会话数据库和 CSRF 密钥持久化，管理 API 升级后无需全部重新登录。
+Nginx 使用 `auth_request` 同时保护页面和 `stats.json`，不是仅用前端跳转。
+
+安装后请为 API 配置 `SIDECAR_HTPASSWD_FILE`（现有 Nginx 密码文件）、
+`SIDECAR_COOKIE_SECURE=1`、`SIDECAR_COOKIE_PATH=/sidecar-stats/`，保持 API 仅监听
+回环地址。只在独立 HTTP 测试环境关闭 Secure Cookie。新增的登录页面和 `auth.js`
+由 `deploy/install-ui.sh` 一并安装。健康检查改用 `/api/health`，其他管理接口需要登录。
+
+完整步骤、交互式密码设置命令、Nginx Session 校验和自动化请求流程见
+[认证部署说明](docs/authentication.md)。`deploy/deploy-auth-existing.sh` 仅适用于
+脚本中列明的旧路径安装：先备份，保留密码文件和转发配置，失败回滚；只重启管理 API、
+优雅重载 Nginx，不重启 V2Ray 或 sidecar。其他安装请先检查路径再升级。
+认证数据、密码文件、密钥、Session 数据库及服务器备份均不得上传 GitHub。
+
 `v2ray-egress-sidecar` 是一个接在 V2Ray/Xray 出口后面的 SOCKS5 sidecar，用来做：
 
 - 按域名/服务统计流量和连接数。
@@ -216,14 +240,14 @@ sudo ./deploy/install-ui.sh
 管理 API 只监听本机：
 
 ```text
-http://127.0.0.1:18082/api/state
+http://127.0.0.1:18082/api/health
 ```
 
 用 nginx 暴露界面。可以从示例配置开始：
 
 ```bash
 sudo cp /etc/nginx/conf.d/v2ray-egress-sidecar-ui.conf.example /etc/nginx/conf.d/v2ray-egress-sidecar-ui.conf
-sudo htpasswd -c /etc/nginx/.htpasswd-v2ray-egress-sidecar sidecar
+sudo htpasswd -cB /etc/nginx/.htpasswd-v2ray-egress-sidecar sidecar
 sudo nginx -t
 sudo systemctl reload nginx
 ```

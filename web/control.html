@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>V2Ray Egress Sidecar Routing</title>
+<script src="auth.js"></script>
 <style>
 :root{color-scheme:light;--bg:#f7f8f4;--panel:#fff;--text:#1d252c;--muted:#68717a;--line:#d9ded6;--accent:#0f766e;--bad:#b42318}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
@@ -63,7 +64,7 @@ let streamPollGeneration=0;
 function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function url(path){return basePath+path.replace(/^\/+/,'')}
 async function fetchJson(path, options){
- const res=await fetch(url(path),options||{});
+ const res=path.startsWith('api/')?await SidecarAuth.request(path,options||{}):await fetch(url(path),options||{});
  const text=await res.text();
  let data=null;
  try{data=text?JSON.parse(text):null}catch(e){
@@ -232,7 +233,7 @@ $('stream-test').onclick=async()=>{
  $('stream-test').disabled=true;$('matrix-test').disabled=true;$('stream-status').textContent='提交检测';$('stream-result').innerHTML='';$('matrix-result').innerHTML='';
  try{
   const body={profile:$('profile').value,country:$('country').value,protocol:$('openvpn-tcp').checked?'tcp':'udp',titles:$('profile').value==='netflix'?[$('stream-titles').value]:[]};
-  const data=await fetchJson('api/streaming/test',{method:'POST',headers:{'Content-Type':'application/json','X-Sidecar-Admin':'1'},body:JSON.stringify(body)});
+  const data=await fetchJson('api/streaming/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(streamTimer)clearTimeout(streamTimer);streamJob=data.job;renderStreamingJob(streamJob);pollStreaming(streamJob.id,++streamPollGeneration);
  }catch(e){$('stream-status').textContent=String(e);$('stream-test').disabled=!profileById($('profile').value)?.streaming;$('matrix-test').disabled=false}
 };
@@ -240,7 +241,7 @@ $('matrix-test').onclick=async()=>{
  $('matrix-test').disabled=true;$('stream-test').disabled=true;$('stream-status').textContent='提交常用服务检测';$('matrix-result').innerHTML='';$('stream-result').innerHTML='';
  try{
   const body={profile:'matrix',country:$('country').value,protocol:$('openvpn-tcp').checked?'tcp':'udp',titles:[$('stream-titles').value]};
-  const data=await fetchJson('api/streaming/test',{method:'POST',headers:{'Content-Type':'application/json','X-Sidecar-Admin':'1'},body:JSON.stringify(body)});
+  const data=await fetchJson('api/streaming/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(streamTimer)clearTimeout(streamTimer);streamJob=data.job;renderStreamingJob(streamJob);pollStreaming(streamJob.id,++streamPollGeneration);
  }catch(e){$('stream-status').textContent=String(e);$('stream-test').disabled=!profileById($('profile').value)?.streaming;$('matrix-test').disabled=false}
 };
@@ -252,7 +253,7 @@ $('apply').onclick=async()=>{
  $('apply').disabled=true; setResult('Applying route. Starting or switching Gluetun can take about 1-2 minutes...');
  try{
   const body={profile:$('profile').value,country:$('country').value,domains:domainsFromText(),include_ip_sb:$('include-ip').checked,protocol:$('openvpn-tcp').checked?'tcp':'udp'};
-  const data=await fetchJson('api/apply',{method:'POST',headers:{'Content-Type':'application/json','X-Sidecar-Admin':'1'},body:JSON.stringify(body)});
+  const data=await fetchJson('api/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   state.state=data.state; renderCurrent();
   setResult(`Applied (hot reload confirmed).\ncountry: ${countryLabel(data.state.country)}\ncontainer: ${data.state.container}\nexit reused: ${data.exit_reused?'yes':'no'}\n出口验证: ${formatIp(data.exit_check)}\nip.sb 路由检测: ${formatIp(data.ip_check)}\nbackup: ${data.backup}`);
  }catch(e){setResult(String(e),true);try{const latest=await fetchJson('api/state');state.state=latest.state;renderCurrent()}catch(_){}}
@@ -262,7 +263,7 @@ $('clear').onclick=async()=>{
  if(!confirm('Clear only the UI-managed rules? Existing non-UI rules stay in config.'))return;
  setResult('Clearing UI-managed rules...');
  try{
-  const data=await fetchJson('api/clear',{method:'POST',headers:{'Content-Type':'application/json','X-Sidecar-Admin':'1'},body:'{}'});
+  const data=await fetchJson('api/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
   state.state=data.state; renderCurrent(); setResult(`Cleared.\nbackup: ${data.backup}`);
  }catch(e){setResult(String(e),true);try{const latest=await fetchJson('api/state');state.state=latest.state;renderCurrent()}catch(_){}}
 };

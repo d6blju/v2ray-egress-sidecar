@@ -40,6 +40,7 @@ from sidecar_exits import ExitPool
 from sidecar_streaming import STREAMING, title_ids
 from sidecar_streaming_jobs import StreamingJobs
 from sidecar_route_transaction import RouteTransaction, RouteError, read_text, digest
+from sidecar_auth import AuthManager, AuthError
 
 EXIT_POOL = ExitPool()
 STREAMING_JOBS = None
@@ -48,6 +49,16 @@ COUNTRY_REFRESH_LOCK = threading.Lock()
 COUNTRY_LAST_ATTEMPT = 0
 CHECK_BIN = os.environ.get('SIDECAR_CHECK_BIN', '/usr/local/bin/v2ray-egress-config-check')
 SIDECAR_SERVICE = os.environ.get('SIDECAR_SERVICE', 'v2ray-egress-sidecar.service')
+AUTH = None
+
+
+def auth_manager():
+    global AUTH
+    if AUTH is None:
+        AUTH = AuthManager(STATE_DIR, htpasswd=os.environ.get('SIDECAR_HTPASSWD_FILE'),
+                           secure=os.environ.get('SIDECAR_COOKIE_SECURE', '1') == '1',
+                           cookie_path=os.environ.get('SIDECAR_COOKIE_PATH', '/'))
+    return AUTH
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -90,11 +101,16 @@ def ensure_state_dir():
     os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
 
 
-def json_response(handler, status, payload):
+def json_response(handler, status, payload, cookies=None):
     body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Cache-Control", "no-store")
+    handler.send_header('X-Content-Type-Options', 'nosniff')
+    handler.send_header('X-Frame-Options', 'DENY')
+    handler.send_header('Referrer-Policy', 'same-origin')
+    for cookie in cookies or []:
+        handler.send_header('Set-Cookie', cookie)
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
@@ -508,6 +524,29 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self):
+        try:
+            auth = auth_manager()
+            if self.path == '/api/health':
+                json_response(self, 200, {'ok': True, 'auth_configured': bool(auth.users() or (auth.htpasswd and os.path.isfile(auth.htpasswd)))})
+                return
+            if self.path in ('/api/session', '/api/auth/check'):
+                token, session, cookie = auth.bootstrap(self, internal=self.path == '/api/auth/check')
+                if self.path == '/api/auth/check':
+                    self.send_response(204 if session['username'] else 401)
+                    if cookie:
+                        self.send_header('Set-Cookie', cookie)
+                    self.send_header('Content-Length', '0')
+                    self.send_header('Cache-Control', 'no-store')
+                    self.end_headers()
+                    return
+                json_response(self, 200, {'ok': True, 'authenticated': bool(session['username']),
+                                         'username': session['username'], 'csrf_token': auth.csrf(token),
+                                         'expires_at': session['expires']}, [cookie] if cookie else None)
+                return
+            auth.require(self)
+        except AuthError as error:
+            error_response(self, error.status, str(error))
+            return
         if self.path == "/api/state":
             options = country_options()
             try:
@@ -544,19 +583,42 @@ class Handler(BaseHTTPRequestHandler):
         error_response(self, 404, "not found")
 
     def do_POST(self):
-        if self.headers.get("X-Sidecar-Admin") != "1":
-            error_response(self, 403, "missing admin header")
+        try:
+            auth = auth_manager()
+            token, session = auth.require(self, write=True, prelogin=self.path == '/api/login')
+        except AuthError as error:
+            error_response(self, error.status, str(error))
             return
-        length = int(self.headers.get("Content-Length", "0") or "0")
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length < 0:
+                raise ValueError()
+        except ValueError:
+            error_response(self, 400, 'bad content length')
+            return
         if length > 65536:
             error_response(self, 413, "payload too large")
             return
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            if not isinstance(payload, dict):
+                raise ValueError('JSON object required')
         except Exception as exc:
             error_response(self, 400, "bad json", str(exc))
             return
         try:
+            if self.path == '/api/login':
+                username = auth.authenticate(payload.get('username'), payload.get('password'), auth.peer(self))
+                new_token = auth.create(username, old=token)
+                new_session = auth.lookup(new_token)
+                json_response(self, 200, {'ok': True, 'authenticated': True, 'username': username,
+                                         'csrf_token': auth.csrf(new_token), 'expires_at': new_session['expires']},
+                              [auth.cookie(new_token), auth.cookie('', 'sidecar_logged_out', 0)])
+                return
+            if self.path == '/api/logout':
+                auth.logout(token)
+                json_response(self, 200, {'ok': True}, [auth.cookie('', max_age=0), auth.cookie('1', 'sidecar_logged_out')])
+                return
             if self.path == "/api/apply":
                 with MUTATION_LOCK:
                     self.handle_apply(payload)
@@ -598,6 +660,9 @@ class Handler(BaseHTTPRequestHandler):
                                                             validate_route_config, reload_checkpoint, confirm_reload, verify_forwarding)
                 json_response(self, 200, {"ok": True, "state": current_state(), "backup": result['backup']})
                 return
+        except AuthError as error:
+            error_response(self, error.status, str(error))
+            return
         except Exception as exc:
             if self.path in ('/api/apply', '/api/clear'):
                 transaction = route_transaction()
@@ -659,6 +724,9 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global STREAMING_JOBS
     ensure_state_dir()
+    if API_HOST not in ('localhost',) and not ipaddress.ip_address(API_HOST).is_loopback:
+        raise RuntimeError('management API must listen on loopback')
+    auth_manager()
     transaction = route_transaction()
     with transaction.locked():
         try:
