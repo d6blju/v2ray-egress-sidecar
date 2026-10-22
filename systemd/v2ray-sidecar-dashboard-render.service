@@ -1,0 +1,13 @@
+[Unit]
+Description=Render V2Ray sidecar stats dashboard
+
+[Service]
+Type=oneshot
+CPUAccounting=true
+CPUQuota=5%
+MemoryAccounting=true
+MemoryMax=256M
+MemoryLimit=256M
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/usr/local/bin/v2ray-sidecar-dashboard-render --stats /var/lib/v2ray-rust-sidecar/stats.jsonl --out /var/www/v2ray-sidecar-dashboard

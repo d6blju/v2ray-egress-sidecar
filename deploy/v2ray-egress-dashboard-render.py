@@ -10,6 +10,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "v2ray-egress-sidecar"))
 from sidecar_services import service_name
+from sidecar_stats_store import StatsStore, pressure
 
 
 def tail_lines(path, max_lines, max_bytes):
@@ -211,6 +212,7 @@ table{width:100%;min-width:860px;border-collapse:collapse;table-layout:auto}th,t
 <header><div class="wrap"><h1>V2Ray Egress Sidecar Stats</h1><div id="meta" class="sub">Loading...</div><div class="tabs" id="tabs"></div></div></header>
 <main class="wrap">
 <section class="kpis" id="kpis"></section>
+<section><h2>V2Ray CPU Diagnostics</h2><div id="diagnostics"></div></section>
 <section class="grid">
 <div><h2>Top Domains</h2><div class="panel" id="domains"></div></div>
 <div><h2>Top Services</h2><div class="panel" id="services"></div></div>
@@ -244,12 +246,16 @@ function table(rows){
 }
 function render(){
  const w=data.windows[active]||Object.values(data.windows)[0], t=w.totals;
- document.getElementById('meta').textContent=`Updated ${data.generated_at_text} | loaded ${fmt(data.loaded_rows)} rows | stats size ${data.stats_size_human}`;
+ document.getElementById('meta').textContent=`Updated ${data.generated_at_text} | ${fmt(data.loaded_rows)} records | log ${data.stats_size_human} | ${data.collection_status||'ok'} | backlog ${fmt(data.backlog_bytes)} B`;
  document.getElementById('tabs').innerHTML=Object.keys(data.windows).map(k=>`<button class="${k===active?'active':''}" onclick="active='${k}';render()">${data.windows[k].label}</button>`).join('')+'<a href="control.html">Routing</a>';
  document.getElementById('kpis').innerHTML=[
   ['Connections',fmt(t.conns)],['Traffic',t.total_human||'0 B'],['Up',t.uplink_human||'0 B'],['Down',t.downlink_human||'0 B'],['TCP / UDP',`${fmt(t.tcp)} / ${fmt(t.udp)}`],['Errors',fmt(t.errors)]
  ].map(x=>`<div class="kpi"><div class="label">${x[0]}</div><div class="value">${x[1]}</div></div>`).join('');
  for(const id of ['domains','services','outbounds','udp','errors'])document.getElementById(id).innerHTML=table(w[id]);
+ const d=data.diagnostics||{}, s=d.status||{}, v=s.latest_sample||{}, incident=d.incident;
+ document.getElementById('diagnostics').textContent=`监测: ${d.state||'unknown'} | 当前采样 CPU: ${v.cpu_percent??'--'}% | PID: ${v.pid||'--'} | 最近事件: `+
+ (incident?`${new Date(incident.timestamp*1000).toLocaleString()}，峰值 ${incident.peak_cpu_percent}%\n`+incident.findings.map(f=>f.evidence).join('\n'):'尚无超阈值事件');
+ document.getElementById('diagnostics').style.whiteSpace='pre-wrap';
 }
 async function load(){
  const res=await fetch('stats.json?ts='+Date.now(),{cache:'no-store'});
@@ -267,31 +273,69 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--stats", default="/var/lib/v2ray-egress-sidecar/stats.jsonl")
     parser.add_argument("--out", default="/var/www/v2ray-egress-sidecar-dashboard")
-    parser.add_argument("--max-lines", type=int, default=100000)
-    parser.add_argument("--max-bytes", type=int, default=32 * 1024 * 1024)
+    parser.add_argument('--database', help='Persistent incremental SQLite database (outside web root)')
+    parser.add_argument('--ignore-pressure', action='store_true', help='For isolated tests only')
+    parser.add_argument('--rotate-bytes', type=int, default=64 * 1024 * 1024)
+    parser.add_argument('--retention-days', type=int, default=3)
+    parser.add_argument('--diagnostics', default='/var/log/v2ray-cpu-diagnostics')
+    parser.add_argument("--max-lines", type=int, default=30000)
+    parser.add_argument("--max-bytes", type=int, default=4 * 1024 * 1024)
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    rows = []
-    if os.path.exists(args.stats):
-        for line in tail_lines(args.stats, args.max_lines, args.max_bytes):
-            try:
-                rows.append(json.loads(line))
-            except ValueError:
-                pass
-
     now = time.time()
+    reason = None if args.ignore_pressure else pressure()
+    if reason:
+        # Preserve last good statistics and expose why collection is delayed.
+        previous = os.path.join(args.out, 'stats.json')
+        if os.path.exists(previous):
+            with open(previous, encoding='utf-8') as fh:
+                old = json.load(fh)
+            old['collection_status'] = 'paused: ' + reason
+            write_atomic(previous, json.dumps(old, separators=(',', ':')))
+        print('paused: ' + reason)
+        return
+    store = StatsStore(args.database or args.stats + '.sqlite3')
+    try:
+        progress = store.ingest(args.stats, args.max_bytes, now)
+        store.rotate(args.stats, args.rotate_bytes, args.retention_days, now)
+        windows = {key: store.summary(ms, label, now) for key, ms, label in
+                   [('5m', 300000, '5 min'), ('1h', 3600000, '1 hour'), ('24h', 86400000, '24 hours')]}
+        loaded_rows = store.db.execute('SELECT COUNT(*) FROM events').fetchone()[0]
+    finally:
+        store.close()
+    for window in windows.values():
+        for key in ('uplink', 'downlink', 'total'):
+            window['totals'][key + '_human'] = bytes_human(window['totals'][key])
+        for key in ('domains', 'services', 'outbounds', 'udp', 'errors'):
+            for row in window[key]:
+                row['total_human'] = bytes_human(row['total'])
+                row['avg_lifetime'] = duration_human(row['avg_ms'])
+    diagnostics = {'state': 'unavailable'}
+    try:
+        with open(os.path.join(args.diagnostics, 'status.json'), encoding='utf-8') as fh:
+            diagnostics['status'] = json.loads(fh.read(262144))
+        status = diagnostics['status']
+        diagnostics['state'] = status.get('state') if now - status.get('updated_at', 0) < 90 else 'stale heartbeat'
+        incident_file = os.path.join(args.diagnostics, 'latest.json')
+        if os.path.exists(incident_file):
+            with open(incident_file, encoding='utf-8') as fh:
+                incident = json.loads(fh.read(2 * 1024 * 1024))
+            diagnostics['incident'] = {'timestamp': incident['timestamp'], 'pid': incident['pid'],
+                                       'peak_cpu_percent': max(s['cpu_percent'] for s in incident['samples']),
+                                       'findings': incident['findings']}
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
     data = {
         "generated_at": int(now),
         "generated_at_text": time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(now)),
-        "loaded_rows": len(rows),
+        "loaded_rows": loaded_rows,
+        "collection_status": 'catching up' if progress['backlog_bytes'] else 'ok',
+        "diagnostics": diagnostics,
+        **progress,
         "stats_size": os.path.getsize(args.stats) if os.path.exists(args.stats) else 0,
         "stats_size_human": bytes_human(os.path.getsize(args.stats)) if os.path.exists(args.stats) else "0 B",
-        "windows": {
-            "5m": summarize(rows, 5 * 60 * 1000, "5 min"),
-            "1h": summarize(rows, 60 * 60 * 1000, "1 hour"),
-            "24h": summarize(rows, 24 * 60 * 60 * 1000, "24 hours"),
-        },
+        "windows": windows,
     }
     write_atomic(os.path.join(args.out, "stats.json"), json.dumps(data, separators=(",", ":")))
     write_atomic(os.path.join(args.out, "index.html"), render_html())

@@ -3,4 +3,11 @@ Description=Render V2Ray egress sidecar stats dashboard
 
 [Service]
 Type=oneshot
+CPUAccounting=true
+CPUQuota=5%
+MemoryAccounting=true
+MemoryMax=256M
+MemoryLimit=256M
+Nice=10
+IOSchedulingClass=idle
 ExecStart=/usr/local/bin/v2ray-egress-dashboard-render --stats /var/lib/v2ray-egress-sidecar/stats.jsonl --out /var/www/v2ray-egress-sidecar-dashboard

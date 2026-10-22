@@ -1,0 +1,20 @@
+[Unit]
+Description=Capture V2Ray diagnostics when CPU is high
+After=v2ray.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/v2ray-egress-sidecar/v2ray_cpu_watch.py
+Restart=on-failure
+RestartSec=10
+CPUAccounting=true
+CPUQuota=2%
+MemoryAccounting=true
+MemoryLimit=32M
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

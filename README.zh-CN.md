@@ -298,6 +298,43 @@ Python 公共模块，安装位置为 `/usr/local/lib/v2ray-egress-sidecar/`。
 
 分类测试：`python3 -m unittest discover -s tests -v`。
 
+## 增量统计与 CPU 诊断
+
+统计页面通过 SQLite 保存日志读取位置，每次只读取新增记录，保留最近 24 小时的统计。
+已消费的日志达到 64 MiB 后自动轮转，归档保留三天；资源紧张时暂停统计刷新并保留上次结果。
+轻量常驻观察器持续记录真实的进程和线程 CPU 增量，超过阈值时自动生成私有报告，页面展示诊断摘要。
+观察器不会重启 V2Ray。
+
+| 组件 | 默认行为 |
+| --- | --- |
+| 统计页面 | 每 60 秒刷新，每次最多读取 4 MiB 新日志 |
+| 资源限制 | 渲染器：单核 5% CPU / 256 MiB；观察器：2% CPU / 32 MiB |
+| 统计范围 | 最近 24 小时，按域名、服务、出口和协议分组 |
+| 日志轮转 | 已消费日志达到 64 MiB 后重命名；已消费归档三天后清理 |
+| 压力保护 | CPU >=80%、可用内存 <20% 或主机已建立 TCP 套接字 >=2048 时暂停 |
+| CPU 事件 | 每秒采样，达到 80% 时保留历史及后续五次采样，五分钟内最多一份报告 |
+| 报告保留 | 生成报告时将归档清理至最多 20 份，并删除超过三天的归档；保留最新报告，页面仅公开摘要 |
+
+在项目根目录执行以下命令安装或升级界面和观察器：
+
+```bash
+sudo bash deploy/install-ui.sh
+sudo systemctl restart v2ray-cpu-diagnose.service
+sudo systemctl status v2ray-cpu-diagnose.service
+sudo cat /var/log/v2ray-cpu-diagnostics/status.json
+sudo cat /var/log/v2ray-cpu-diagnostics/latest.txt
+```
+
+首次 CPU 事件发生后才会生成 `latest.txt` 和 `latest.json`；没有事件时仍可通过
+`status.json` 查看心跳和最新 CPU 采样。首次导入可能分为多个批次，页面通过
+`catching up` 和积压字节数显示进度；压力暂停期间保留上次成功的统计结果。
+安装器会停用旧诊断定时器。升级后只需重启观察器，不需要重启 V2Ray/Xray 或 Rust 转发服务。
+
+报告会区分已测量证据和推测。高 CPU 而主机流量较低可能对应多种原因，定位具体 Go 函数仍需要
+CPU profile。已结束会话的域名统计无法识别所有活动 TLS 连接，单次快照也不能证明连接泄漏。
+部署、资源限制、证据边界、旧版目录适配和回滚方法见 [运维说明](docs/observability.md)。
+不要提交统计数据库、原始日志、事件报告、凭据或本机服务器配置。
+
 ## 流媒体检测与出口复用
 
 在路由页选择服务和国家，点击“检测当前服务”。支持 Netflix、HBO Max、Disney+、

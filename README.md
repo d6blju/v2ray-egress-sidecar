@@ -344,6 +344,48 @@ Existing routing rules are unchanged until you apply a profile.
 
 Run the grouping tests with `python3 -m unittest discover -s tests -v`.
 
+## Incremental Statistics And CPU Diagnostics
+
+The dashboard now imports only appended JSONL records into SQLite, retains 24-hour
+statistics, rotates consumed logs at 64 MiB, and pauses under host resource pressure.
+A lightweight continuous observer captures real V2Ray CPU spikes and generates
+private evidence reports plus a dashboard summary. It never restarts V2Ray.
+
+| Component | Default behavior |
+| --- | --- |
+| Dashboard | Refresh every 60 seconds; read up to 4 MiB of new logs per run |
+| Resource limits | Renderer: 5% of one CPU / 256 MiB; observer: 2% / 32 MiB |
+| Statistics | Last 24 hours, grouped by domain, service, outbound and protocol |
+| Rotation | Rename consumed logs at 64 MiB; delete consumed archives after three days |
+| Pressure guard | Pause at CPU >=80%, available memory <20%, or >=2048 established host TCP sockets |
+| CPU incidents | Sample every second; >=80% triggers history plus five further samples; five-minute cooldown |
+| Reports | On capture, keep up to 20 archives and prune those older than three days; retain the latest report and publish only its summary |
+
+From the repository root, install or upgrade the UI and observer with:
+
+```bash
+sudo bash deploy/install-ui.sh
+sudo systemctl restart v2ray-cpu-diagnose.service
+sudo systemctl status v2ray-cpu-diagnose.service
+sudo cat /var/log/v2ray-cpu-diagnostics/status.json
+sudo cat /var/log/v2ray-cpu-diagnostics/latest.txt
+```
+
+`latest.txt` and `latest.json` appear after the first CPU incident. `status.json`
+shows the observer heartbeat and latest CPU sample even when no incident occurred.
+Initial import may take several batches; the page shows `catching up` and backlog
+bytes until it finishes. Pressure pauses preserve the last successful statistics.
+The installer disables the old diagnostic timer. Restart only the observer to load
+an upgrade; V2Ray/Xray and the Rust forwarding service do not need restarting.
+
+Reports distinguish measured evidence from hypotheses. CPU without large host
+traffic can suggest several causes; identifying the exact Go function still needs
+a CPU profile. Completed-session domain counters cannot identify all active TLS
+connections or prove a connection leak from a single snapshot.
+See [deployment, limits, diagnosis and rollback](docs/observability.md), including
+the alternate paths used by older installations. Do not commit the database,
+raw logs, incident reports, credentials or local server configuration.
+
 ## Streaming Checks And Exit Reuse
 
 Choose a streaming service and country in the routing page, then click the

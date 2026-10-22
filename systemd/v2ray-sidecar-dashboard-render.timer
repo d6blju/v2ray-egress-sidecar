@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh V2Ray sidecar stats dashboard
+
+[Timer]
+OnBootSec=5s
+OnUnitActiveSec=60s
+AccuracySec=10s
+Unit=v2ray-sidecar-dashboard-render.service
+
+[Install]
+WantedBy=timers.target
