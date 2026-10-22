@@ -4,12 +4,19 @@ set -euo pipefail
 WEB_ROOT="${WEB_ROOT:-/var/www/v2ray-egress-sidecar-dashboard}"
 STATE_DIR="${STATE_DIR:-/var/lib/v2ray-egress-sidecar-admin}"
 LIB_DIR="/usr/local/lib/v2ray-egress-sidecar"
+CHECK_SOURCE="${SIDECAR_CHECK_SOURCE:-./target/release/v2ray-egress-sidecar}"
+if [[ ! -f "$CHECK_SOURCE" ]]; then
+    echo 'Build the configuration checker with cargo build --release before installing the UI.' >&2
+    exit 1
+fi
+install -m 0755 "$CHECK_SOURCE" /usr/local/bin/v2ray-egress-config-check
 
 install -d "${WEB_ROOT}"
 install -d -m 0700 "${STATE_DIR}"
 install -d "${LIB_DIR}"
 install -m 0644 ./deploy/sidecar_services.py "${LIB_DIR}/sidecar_services.py"
 install -m 0644 ./deploy/sidecar_stats_store.py "${LIB_DIR}/sidecar_stats_store.py"
+install -m 0644 ./deploy/sidecar_route_transaction.py "${LIB_DIR}/sidecar_route_transaction.py"
 install -m 0644 ./deploy/v2ray_cpu_watch.py "${LIB_DIR}/v2ray_cpu_watch.py"
 install -m 0644 ./deploy/service-domains.json "${LIB_DIR}/service-domains.json"
 install -m 0644 ./deploy/sidecar_exits.py "${LIB_DIR}/sidecar_exits.py"

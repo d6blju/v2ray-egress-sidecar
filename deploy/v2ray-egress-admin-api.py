@@ -3,7 +3,6 @@ import json
 import ipaddress
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,12 +39,15 @@ from sidecar_services import PROFILES
 from sidecar_exits import ExitPool
 from sidecar_streaming import STREAMING, title_ids
 from sidecar_streaming_jobs import StreamingJobs
+from sidecar_route_transaction import RouteTransaction, RouteError, read_text, digest
 
 EXIT_POOL = ExitPool()
 STREAMING_JOBS = None
 MUTATION_LOCK = threading.Lock()
 COUNTRY_REFRESH_LOCK = threading.Lock()
 COUNTRY_LAST_ATTEMPT = 0
+CHECK_BIN = os.environ.get('SIDECAR_CHECK_BIN', '/usr/local/bin/v2ray-egress-config-check')
+SIDECAR_SERVICE = os.environ.get('SIDECAR_SERVICE', 'v2ray-egress-sidecar.service')
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -303,9 +305,7 @@ def managed_block(country, profile_id, domains, proxy_addr=None):
     return "\n".join(lines).rstrip() + "\n"
 
 
-def write_sidecar_config(country, profile_id, domains, proxy_addr=None):
-    with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
-        current = fh.read()
+def candidate_config(current, country, profile_id, domains, proxy_addr=None):
     clean = remove_managed_artifacts(current)
     block = managed_block(country, profile_id, domains, proxy_addr)
     marker = "\n[[rules]]"
@@ -314,40 +314,89 @@ def write_sidecar_config(country, profile_id, domains, proxy_addr=None):
         new_text = clean[:idx] + block + "\n" + clean[idx:]
     else:
         new_text = clean.rstrip() + "\n\n" + block
-    backup = "%s.bak.%s-ui" % (CONFIG_PATH, time.strftime("%Y%m%d%H%M%S"))
-    shutil.copy2(CONFIG_PATH, backup)
-    fd, tmp = tempfile.mkstemp(prefix=".config-", dir=os.path.dirname(CONFIG_PATH))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(new_text)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, CONFIG_PATH)
-    finally:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-    return backup
+    return new_text
 
 
-def clear_sidecar_config():
-    with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
-        current = fh.read()
-    clean = remove_managed_artifacts(current)
-    backup = "%s.bak.%s-ui-clear" % (CONFIG_PATH, time.strftime("%Y%m%d%H%M%S"))
-    shutil.copy2(CONFIG_PATH, backup)
-    fd, tmp = tempfile.mkstemp(prefix=".config-", dir=os.path.dirname(CONFIG_PATH))
+def validate_route_config(text):
+    if text is None:
+        raise ValueError('configuration is missing')
+    if text.count(MANAGED_BEGIN) != text.count(MANAGED_END) or text.count(MANAGED_BEGIN) > 1:
+        raise ValueError('unbalanced UI-managed configuration markers')
+    if MANAGED_BEGIN in text and text.index(MANAGED_BEGIN) > text.index(MANAGED_END):
+        raise ValueError('invalid UI-managed marker order')
+    ensure_state_dir()
+    fd, tmp = tempfile.mkstemp(prefix='.validate-', suffix='.toml', dir=STATE_DIR)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(clean)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, CONFIG_PATH)
+            fh.write(text)
+        run_cmd([CHECK_BIN, '--check', '--config', tmp], timeout=10)
     finally:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-    return backup
+        os.unlink(tmp)
+
+
+def reload_checkpoint():
+    pid = int(run_cmd(['systemctl', 'show', '-p', 'MainPID', SIDECAR_SERVICE], timeout=5).split('=')[-1])
+    if not pid:
+        raise RouteError('sidecar is not running')
+    rows = run_cmd(['journalctl', '-u', SIDECAR_SERVICE, '-n', '1', '-o', 'json', '--no-pager'], timeout=5)
+    cursor = json.loads(rows.splitlines()[-1])['__CURSOR']
+    return {'pid': pid, 'cursor': cursor}
+
+
+def confirm_reload(checkpoint, text):
+    interval = re.search(r'^\s*reload_interval_secs\s*=\s*(\d+)', text, re.M)
+    timeout = min(120, max(15, int(interval.group(1)) * 2 + 5 if interval else 15))
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if read_text(CONFIG_PATH) != text:
+            raise RouteError('configuration changed while waiting for sidecar reload')
+        pid = int(run_cmd(['systemctl', 'show', '-p', 'MainPID', SIDECAR_SERVICE], timeout=5).split('=')[-1])
+        if pid != checkpoint['pid']:
+            raise RouteError('sidecar process changed during transaction')
+        rows = run_cmd(['journalctl', '-u', SIDECAR_SERVICE, '--after-cursor', checkpoint['cursor'],
+                        '-n', '30', '-o', 'json', '--no-pager'], timeout=5)
+        for line in rows.splitlines():
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if str(entry.get('_PID')) != str(pid):
+                continue
+            message = entry.get('MESSAGE', '')
+            if 'config reload rejected:' in message or 'config reload failed:' in message:
+                raise RouteError('sidecar rejected candidate configuration')
+            if 'config reloaded successfully' in message:
+                return {'confirmed': True, 'pid': pid, 'config_sha256': digest(text)}
+        time.sleep(.5)
+    raise RouteError('sidecar hot-reload acknowledgement timed out')
+
+
+def verify_exit(info, expected_code=None):
+    raw = run_cmd(['curl', '-fsS', '--ipv4', '--noproxy', '', '--proxy', 'http://' + info['proxy'],
+                   '--connect-timeout', '4', '--max-time', '10', 'https://www.cloudflare.com/cdn-cgi/trace'], timeout=15)
+    fields = dict(line.split('=', 1) for line in raw.splitlines() if '=' in line)
+    ip = str(ipaddress.ip_address(fields.get('ip', '')))
+    country = fields.get('loc', '').upper()
+    if not re.fullmatch('[A-Z]{2}', country):
+        raise RouteError('exit probe did not return a country')
+    if expected_code and country != expected_code:
+        raise RouteError('exit country mismatch: requested %s, measured %s' % (expected_code, country))
+    return {'ok': True, 'ip': ip, 'country_code': country, 'country_source': 'Cloudflare via selected exit'}
+
+
+def verify_forwarding():
+    run_cmd(['curl', '-fsS', '--ipv4', '--noproxy', '', '--socks5-hostname', SIDECAR_SOCKS,
+             '--connect-timeout', '4', '--max-time', '10', '-o', '/dev/null', 'https://www.example.com/'], timeout=15)
+
+
+def route_transaction():
+    return RouteTransaction(CONFIG_PATH, STATE_PATH, STATE_DIR)
+
+
+def validate_route_state():
+    text = read_text(STATE_PATH)
+    if text is not None and not isinstance(json.loads(text), dict):
+        raise ValueError('state file is not a JSON object')
 
 
 def gluetun_status(container=None):
@@ -366,7 +415,11 @@ def gluetun_status(container=None):
 
 def protected_proxy_ports():
     with open(CONFIG_PATH, "r", encoding="utf-8") as source:
-        sections = toml_sections(source.read())
+        text = source.read()
+    pending = read_text(route_transaction().journal)
+    if pending:
+        text += '\n' + json.loads(pending)['old_config']
+    sections = toml_sections(text)
     outbounds, referenced = [], set()
     for section in sections:
         if section.lstrip().startswith("[[outbounds]]"):
@@ -439,6 +492,12 @@ def current_state(exits=None):
             state.update(container=match["container"], proxy=match["proxy"], protocol=match["protocol"])
             container = match["container"]
     state["gluetun"] = gluetun_status(container) if state["active"] and container else None
+    transaction = route_transaction()
+    state['last_transaction'] = transaction.result()
+    state['last_failure'] = load_json(transaction.failure, None)
+    config = read_text(CONFIG_PATH)
+    state['config_matches_state'] = bool(config is not None and state.get('config_sha256') == digest(config)) if state.get('config_sha256') else None
+    state['transaction_pending'] = bool(read_text(transaction.journal))
     return state
 
 
@@ -516,9 +575,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/clear":
                 with MUTATION_LOCK:
-                    backup = clear_sidecar_config()
-                    state = load_json(STATE_PATH, {})
-                    state.update(
+                    transaction = route_transaction()
+                    with transaction.locked():
+                        transaction.recover(reload_checkpoint, confirm_reload)
+                        validate_route_state()
+                        current = read_text(CONFIG_PATH)
+                        state = load_json(STATE_PATH, {})
+                        state.update(
                         active=False,
                         profile=None,
                         country=None,
@@ -529,13 +592,17 @@ class Handler(BaseHTTPRequestHandler):
                         container=None,
                         gluetun=None,
                         updated_at=int(time.time()),
-                        backup=backup,
                         outbound=OUTBOUND_TAG,
-                    )
-                    save_json(STATE_PATH, state)
-                json_response(self, 200, {"ok": True, "state": current_state(), "backup": backup})
+                        )
+                        state, result = transaction.execute(current, remove_managed_artifacts(current), state,
+                                                            validate_route_config, reload_checkpoint, confirm_reload, verify_forwarding)
+                json_response(self, 200, {"ok": True, "state": current_state(), "backup": result['backup']})
                 return
         except Exception as exc:
+            if self.path in ('/api/apply', '/api/clear'):
+                transaction = route_transaction()
+                if not getattr(exc, 'transaction_result', None):
+                    transaction.fail(exc)
             error_response(self, 500, "operation failed", str(exc))
             return
         error_response(self, 404, "not found")
@@ -555,10 +622,18 @@ class Handler(BaseHTTPRequestHandler):
         domains = normalize_domains(domains)
         if not domains:
             raise ValueError("no domains selected")
-        gluetun = start_gluetun(country, protocol)
-        info = gluetun["exit"]
-        backup = write_sidecar_config(country, profile_id, domains, info["proxy"])
-        state = {
+        transaction = route_transaction()
+        with transaction.locked():
+            transaction.recover(reload_checkpoint, confirm_reload)
+            validate_route_state()
+            current = read_text(CONFIG_PATH)
+            validate_route_config(current)
+            gluetun = start_gluetun(country, protocol)
+            info = gluetun["exit"]
+            expected_code = next((c.get('code') for c in country_options() if c['name'] == country), None)
+            exit_check = verify_exit(info, expected_code)
+            candidate = candidate_config(current, country, profile_id, domains, info['proxy'])
+            state = {
             "active": True,
             "profile": profile_id,
             "country": country,
@@ -569,22 +644,35 @@ class Handler(BaseHTTPRequestHandler):
             "proxy": info["proxy"],
             "container": info["container"],
             "updated_at": int(time.time()),
-            "backup": backup,
             "gluetun": gluetun.get("status", {}),
-        }
-        save_json(STATE_PATH, state)
-        time.sleep(6)
-        json_response(self, 200, {"ok": True, "state": current_state(), "backup": backup, "ip_check": check_ip(), "exit_reused": info["reused"]})
+            'exit_check': exit_check,
+            }
+            def postcheck():
+                verify_exit(info, expected_code)
+                verify_forwarding()
+            state, result = transaction.execute(current, candidate, state, validate_route_config,
+                                                reload_checkpoint, confirm_reload, postcheck)
+        json_response(self, 200, {"ok": True, "state": current_state(), "backup": result['backup'],
+                                 "exit_check": exit_check, "ip_check": check_ip(), "exit_reused": info["reused"]})
 
 
 def main():
     global STREAMING_JOBS
     ensure_state_dir()
+    transaction = route_transaction()
+    with transaction.locked():
+        try:
+            transaction.recover(reload_checkpoint, confirm_reload)
+        except Exception as error:
+            # Keep read-only status available; the pending journal blocks new writes.
+            print('route recovery needs attention: %s' % error, file=sys.stderr)
     STREAMING_JOBS = StreamingJobs(EXIT_POOL, protected_proxy_ports, STATE_DIR, mutation_lock=MUTATION_LOCK)
     def maintain_exits():
         while True:
             time.sleep(60)
             try:
+                if read_text(route_transaction().journal):
+                    continue
                 if time.time() - os.path.getmtime(CONFIG_PATH) < 30:
                     continue
                 with MUTATION_LOCK:

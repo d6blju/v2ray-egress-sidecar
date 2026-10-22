@@ -22,3 +22,7 @@ v2ray-[0-9]*.json
 *.key
 *.p12
 *.pfx
+*.bak.*
+route-transaction.json
+route-last-result.json
+route-last-failure.json

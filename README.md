@@ -344,6 +344,26 @@ Existing routing rules are unchanged until you apply a profile.
 
 Run the grouping tests with `python3 -m unittest discover -s tests -v`.
 
+## Route Transactions And Rollback
+
+Apply and Clear now validate the existing and candidate configurations, verify
+the selected exit's HTTPS connectivity/country, and wait for a successful hot
+reload from the same sidecar PID before committing UI state. A post-publication
+failure restores the old configuration/state and verifies the rollback. A private,
+fsynced journal recovers interrupted operations on API startup. Detected external
+edits are preserved and block further changes until reconciled.
+
+The page shows pending recovery, config/state agreement and the previous failure.
+Selected-exit checks and `ip.sb` route checks are displayed separately. Existing
+connections retain their exit; new connections can briefly use a candidate before
+a failed postcheck rolls it back. V2Ray and the forwarding sidecar keep running.
+
+Build with `cargo build --release` before `sudo bash deploy/install-ui.sh`, then
+restart only `v2ray-egress-sidecar-admin-api.service`. The new `--check` mode runs
+configuration validation without opening a listener. Older servers can install
+it as a separate checker without replacing their running Rust binary.
+See [transaction behavior, recovery, upgrade settings and tests](docs/route-transactions.md).
+
 ## Incremental Statistics And CPU Diagnostics
 
 The dashboard now imports only appended JSONL records into SQLite, retains 24-hour

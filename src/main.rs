@@ -117,6 +117,10 @@ fn main() {
 fn run() -> io::Result<()> {
     let config_path = parse_config_path();
     let runtime = load_runtime(&config_path)?;
+    if env::args().any(|arg| arg == "--check") {
+        println!("configuration valid");
+        return Ok(());
+    }
     let listen_addr = runtime.config.listen.clone();
     ensure_stats_dir(&runtime.config.stats_path)?;
 

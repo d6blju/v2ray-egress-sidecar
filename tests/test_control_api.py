@@ -50,6 +50,11 @@ class ControlAPITests(unittest.TestCase):
             patch.object(admin, "country_options", return_value=[{"name": "Bangladesh", "code": "BD"}]),
             patch.object(admin, "gluetun_status", return_value={"container": "gluetun-bd", "status": "running", "health": "healthy"}),
             patch.object(admin, "check_ip", return_value={"ok": True, "ip": "192.0.2.25"}),
+            patch.object(admin, 'validate_route_config', return_value=None),
+            patch.object(admin, 'reload_checkpoint', return_value={'pid': 42, 'cursor': 'test'}),
+            patch.object(admin, 'confirm_reload', return_value={'confirmed': True, 'pid': 42}),
+            patch.object(admin, 'verify_forwarding', return_value=None),
+            patch.object(admin, 'verify_exit', return_value={'ok': True, 'ip': '192.0.2.25', 'country_code': 'BD'}),
             patch.object(admin.time, "sleep", return_value=None),
         ]
         for replacement in self.patches:
@@ -137,6 +142,32 @@ class ControlAPITests(unittest.TestCase):
         with open(self.config) as source:
             self.assertEqual(source.read(), CONFIG)
         self.assertFalse(any(call[:2] == ["docker", "run"] for call in self.docker.calls))
+
+    def test_exit_probe_failure_keeps_manual_and_current_rules(self):
+        body = {'profile': 'hbo-max', 'country': 'Bangladesh'}
+        with patch.object(admin, 'verify_exit', side_effect=RuntimeError('probe failed')):
+            status, data = self.request('/api/apply', body)
+        self.assertEqual(status, 500)
+        with open(self.config) as source:
+            self.assertEqual(source.read(), CONFIG)
+        status, data = self.request('/api/state')
+        self.assertEqual(data['state']['last_transaction']['status'], 'failed')
+        self.assertFalse(data['state']['transaction_pending'])
+
+    def test_clear_postcheck_failure_restores_managed_route(self):
+        status, data = self.request('/api/apply', {'profile': 'hbo-max', 'country': 'Bangladesh'})
+        self.assertEqual(status, 200)
+        with open(self.config) as source:
+            applied = source.read()
+        with patch.object(admin, 'verify_forwarding', side_effect=RuntimeError('forwarding failed')):
+            status, data = self.request('/api/clear', {})
+        self.assertEqual(status, 500)
+        with open(self.config) as source:
+            self.assertEqual(source.read(), applied)
+        status, data = self.request('/api/state')
+        self.assertTrue(data['state']['active'])
+        self.assertTrue(data['state']['config_matches_state'])
+        self.assertEqual(data['state']['last_transaction']['status'], 'rolled_back')
 
 
 class IPCheckTests(unittest.TestCase):
