@@ -367,6 +367,221 @@ class ControlAPITests(unittest.TestCase):
         self.assertNotIn('domain_suffix = ".api.ip.sb"', config)
         self.assertIn('outbound = "manual-nord"', config)
 
+    def toggle_service(self, profile, enabled):
+        status, data = self.request('/api/routes/toggle', {'profile': profile, 'enabled': enabled})
+        self.assertEqual(status, 200, data)
+        return data
+
+    def test_pause_shared_exit_service_retains_settings_and_other_service(self):
+        self.apply_service('binance', ['binance.com'])
+        initial = self.apply_service('netflix', ['netflix.com'])
+        original = {route['profile']: route for route in initial['state']['routes']}
+        with patch.object(admin, 'verify_exit', side_effect=AssertionError('pausing must not probe an exit')):
+            paused = self.toggle_service('binance', False)
+        routes = {route['profile']: route for route in paused['state']['routes']}
+        self.assertFalse(routes['binance']['enabled'])
+        self.assertEqual(routes['binance']['domains'], ['binance.com'])
+        self.assertEqual(routes['binance']['country'], original['binance']['country'])
+        self.assertEqual(routes['netflix'], original['netflix'])
+        self.assertTrue(paused['state']['active'])
+        with open(self.config) as source:
+            config = source.read()
+        self.assertNotIn('domain_suffix = ".binance.com"', config)
+        self.assertIn('domain_suffix = ".netflix.com"', config)
+        self.assertIn('tag = "nord-ui"', config)
+        self.assertIn('outbound = "manual-nord"', config)
+        self.assertFalse(any(call[:2] in (['docker', 'stop'], ['docker', 'rm']) for call in self.docker.calls))
+
+    def test_all_paused_routes_survive_state_read_and_resume(self):
+        self.apply_service('binance', ['binance.com'])
+        self.apply_service('netflix', ['netflix.com'])
+        self.toggle_service('binance', False)
+        paused = self.toggle_service('netflix', False)
+        self.assertFalse(paused['state']['active'])
+        self.assertEqual(len(paused['state']['routes']), 2)
+        with open(self.config) as source:
+            config = source.read()
+        self.assertNotIn('nord-ui', config)
+        self.assertIn('outbound = "manual-nord"', config)
+        status, viewed = self.request('/api/state')
+        self.assertEqual(viewed['state']['routes'], paused['state']['routes'])
+        with patch.object(admin, 'verify_exit', return_value={'ok': True, 'country_code': 'BD'}) as probe:
+            resumed = self.toggle_service('binance', True)
+        self.assertTrue(probe.called, 'resuming must verify the real VPN exit')
+        routes = {route['profile']: route for route in resumed['state']['routes']}
+        self.assertTrue(routes['binance']['enabled'])
+        self.assertFalse(routes['netflix']['enabled'])
+        self.assertTrue(resumed['state']['active'])
+        with open(self.config) as source:
+            config = source.read()
+        self.assertIn('domain_suffix = ".binance.com"', config)
+        self.assertNotIn('domain_suffix = ".netflix.com"', config)
+
+    def test_edit_paused_service_keeps_it_paused_and_delete_removes_it(self):
+        self.apply_service('binance', ['binance.com', 'binance.us'])
+        self.toggle_service('binance', False)
+        edited = self.apply_service('binance', ['binanceapi.com'])
+        self.assertFalse(edited['state']['active'])
+        self.assertFalse(edited['state']['routes'][0]['enabled'])
+        self.assertEqual(edited['state']['routes'][0]['domains'], ['binanceapi.com'])
+        with open(self.config) as source:
+            self.assertNotIn('nord-ui', source.read())
+        status, deleted = self.request('/api/routes/delete', {'profile': 'binance'})
+        self.assertEqual(status, 200, deleted)
+        self.assertEqual(deleted['state']['routes'], [])
+        self.assertFalse(deleted['state']['active'])
+
+    def test_resume_after_paused_country_protocol_edit_uses_new_exit(self):
+        self.apply_service('binance', ['binance.com'])
+        self.toggle_service('binance', False)
+        options = [{'name': 'Bangladesh', 'code': 'BD'}, {'name': 'Hong Kong', 'code': 'HK'}]
+        hk = container('gluetun-hk-tcp', country='Hong Kong', port=18894)
+        hk['Config']['Env'] = [value.replace('OPENVPN_PROTOCOL=udp', 'OPENVPN_PROTOCOL=tcp')
+                               for value in hk['Config']['Env']]
+        self.docker.items.append(hk)
+        with patch.object(admin, 'country_options', return_value=options):
+            with patch.object(self.pool, 'ensure', side_effect=AssertionError('editing paused service must not start an exit')), \
+                 patch.object(admin, 'verify_exit', side_effect=AssertionError('editing paused service must not probe an exit')):
+                status, edited = self.request('/api/apply', {
+                    'profile': 'binance', 'country': 'Hong Kong', 'protocol': 'tcp',
+                    'domains': ['binanceapi.com'], 'include_ip_sb': False,
+                })
+            self.assertEqual(status, 200, edited)
+            paused = edited['state']['routes'][0]
+            self.assertFalse(paused['enabled'])
+            self.assertEqual((paused['country'], paused['protocol']), ('Hong Kong', 'tcp'))
+            self.assertIsNone(paused['proxy'])
+            self.assertIsNone(paused['container'])
+            self.assertEqual(admin.preferred_proxy_port('Hong Kong'), int(admin.PROXY_PORT))
+            with patch.object(self.pool, 'ensure', wraps=self.pool.ensure) as ensure, \
+                 patch.object(admin, 'verify_exit', return_value={'ok': True, 'country_code': 'HK'}) as probe:
+                resumed = self.toggle_service('binance', True)
+        self.assertTrue(ensure.called)
+        self.assertEqual(ensure.call_args[0][:2], ('Hong Kong', 'tcp'))
+        self.assertTrue(probe.called)
+        self.assertTrue(all(call[0][0]['proxy'] == '127.0.0.1:18894' for call in probe.call_args_list))
+        saved = resumed['state']['routes'][0]
+        self.assertTrue(saved['enabled'])
+        self.assertEqual((saved['country'], saved['protocol']), ('Hong Kong', 'tcp'))
+        self.assertEqual(saved['domains'], ['binanceapi.com'])
+        self.assertEqual((saved['proxy'], saved['container']), ('127.0.0.1:18894', 'gluetun-hk-tcp'))
+        with open(self.config) as source:
+            config = source.read()
+        self.assertIn('domain_suffix = ".binanceapi.com"', config)
+        self.assertIn('addr = "127.0.0.1:18894"', config)
+        self.assertIn('outbound = "manual-nord"', config)
+
+    def test_resume_probe_failure_preserves_paused_state_and_config(self):
+        self.apply_service('binance', ['binance.com'])
+        paused = self.toggle_service('binance', False)
+        with open(self.config) as source:
+            config_before = source.read()
+        with patch.object(admin, 'verify_exit', side_effect=RuntimeError('wrong exit country')):
+            status, data = self.request('/api/routes/toggle', {'profile': 'binance', 'enabled': True})
+        self.assertEqual(status, 500)
+        with open(self.config) as source:
+            self.assertEqual(source.read(), config_before)
+        status, viewed = self.request('/api/state')
+        self.assertEqual(viewed['state']['routes'], paused['state']['routes'])
+        self.assertFalse(viewed['state']['active'])
+
+    def test_paused_conflicting_domains_only_conflict_when_resumed(self):
+        self.apply_service('binance', ['shared.example'])
+        self.toggle_service('binance', False)
+        self.docker.items.append(container('gluetun-hk', country='Hong Kong', port=18894))
+        options = [{'name': 'Bangladesh', 'code': 'BD'}, {'name': 'Hong Kong', 'code': 'HK'}]
+        with patch.object(admin, 'country_options', return_value=options):
+            initial = self.apply_service('netflix', ['shared.example'], country='Hong Kong')
+            with open(self.config) as source:
+                config_before = source.read()
+            status, data = self.request('/api/routes/toggle', {'profile': 'binance', 'enabled': True})
+        self.assertEqual(status, 500)
+        self.assertIn('conflict', data['details'])
+        status, viewed = self.request('/api/state')
+        self.assertEqual(viewed['state']['routes'], initial['state']['routes'])
+        with open(self.config) as source:
+            self.assertEqual(source.read(), config_before)
+
+    def test_pause_reload_postcheck_failure_rolls_back_enabled_route(self):
+        initial = self.apply_service('binance', ['binance.com'])
+        with open(self.config) as source:
+            config_before = source.read()
+        with patch.object(admin, 'verify_forwarding', side_effect=RuntimeError('forwarding failed')):
+            status, data = self.request('/api/routes/toggle', {'profile': 'binance', 'enabled': False})
+        self.assertEqual(status, 500)
+        with open(self.config) as source:
+            self.assertEqual(source.read(), config_before)
+        status, viewed = self.request('/api/state')
+        self.assertEqual(viewed['state']['routes'], initial['state']['routes'])
+        self.assertTrue(viewed['state']['active'])
+        self.assertEqual(viewed['state']['last_transaction']['status'], 'rolled_back')
+
+    def test_preview_does_not_change_config_state_or_start_or_probe_exit(self):
+        self.apply_service('binance', ['binance.com'])
+        with open(self.config) as source:
+            config_before = source.read()
+        with open(admin.STATE_PATH) as source:
+            state_before = source.read()
+        with patch.object(self.pool, 'ensure', side_effect=AssertionError('preview cannot start an exit')), \
+             patch.object(admin, 'verify_exit', side_effect=AssertionError('preview cannot probe an exit')):
+            status, data = self.request('/api/routes/preview', {'domain': 'api.binance.com'})
+        self.assertEqual(status, 200, data)
+        self.assertIsInstance(data['preview'], dict)
+        self.assertEqual(data['preview']['domain'], 'api.binance.com')
+        self.assertEqual(data['preview']['outcome'], 'proxy')
+        self.assertEqual(data['preview']['services'], ['binance'])
+        self.assertEqual(data['preview']['rule']['source'], 'ui')
+        self.assertEqual(data['preview']['outbound']['proxy'], '127.0.0.1:18891')
+        with open(self.config) as source:
+            self.assertEqual(source.read(), config_before)
+        with open(admin.STATE_PATH) as source:
+            self.assertEqual(source.read(), state_before)
+
+    def test_preview_paused_service_uses_fallback_and_keeps_manual_match(self):
+        self.apply_service('binance', ['binance.com'])
+        self.toggle_service('binance', False)
+        status, data = self.request('/api/routes/preview', {'domain': 'api.binance.com'})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data['preview']['outcome'], 'direct')
+        self.assertFalse(data['preview']['matched'])
+        self.assertEqual(data['preview']['services'], [])
+        self.assertIsNone(data['preview']['rule'])
+        status, data = self.request('/api/routes/preview', {'domain': 'api.ip.sb'})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data['preview']['outcome'], 'proxy')
+        self.assertEqual(data['preview']['outbound']['tag'], 'manual-nord')
+        self.assertEqual(data['preview']['rule']['source'], 'manual')
+        self.assertEqual(data['preview']['services'], [])
+
+    def test_toggle_and_preview_require_authentication_and_csrf(self):
+        self.apply_service('binance', ['binance.com'])
+        for endpoint, payload in [('/api/routes/toggle', {'profile': 'binance', 'enabled': False}),
+                                  ('/api/routes/preview', {'domain': 'binance.com'})]:
+            with self.subTest(endpoint=endpoint):
+                status, data = self.request(endpoint, payload, authorized=False)
+                self.assertEqual(status, 401)
+                request = Request(self.base + endpoint, data=json.dumps(payload).encode(),
+                                  headers={'Cookie': 'sidecar_session=' + self.token, 'Content-Type': 'application/json'})
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(request, timeout=3)
+                self.assertEqual(error.exception.code, 403)
+                error.exception.close()
+
+    def test_toggle_requires_boolean_and_missing_service_does_not_mutate(self):
+        before = self.apply_service('binance', ['binance.com'])
+        with open(self.config) as source:
+            config_before = source.read()
+        for value in ('false', 0, None):
+            with self.subTest(enabled=value):
+                status, data = self.request('/api/routes/toggle', {'profile': 'binance', 'enabled': value})
+                self.assertEqual(status, 400, data)
+        status, data = self.request('/api/routes/toggle', {'profile': 'netflix', 'enabled': False})
+        self.assertEqual(status, 404, data)
+        status, viewed = self.request('/api/state')
+        self.assertEqual(viewed['state']['routes'], before['state']['routes'])
+        with open(self.config) as source:
+            self.assertEqual(source.read(), config_before)
+
 
 class IPCheckTests(unittest.TestCase):
     def test_ipcheck_returns_country_city_and_uses_sidecar(self):

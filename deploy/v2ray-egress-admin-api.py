@@ -41,6 +41,7 @@ from sidecar_streaming import STREAMING, title_ids
 from sidecar_streaming_jobs import StreamingJobs
 from sidecar_route_transaction import RouteTransaction, RouteError, read_text, digest
 from sidecar_auth import AuthManager, AuthError
+from sidecar_route_preview import preview_route
 
 EXIT_POOL = ExitPool()
 STREAMING_JOBS = None
@@ -298,14 +299,17 @@ def remove_managed_artifacts(text):
 
 
 def saved_routes(state):
-    if not state.get('active'):
-        return []
     if 'routes' in state:
-        return [dict(route) for route in state['routes']]
-    # Migrate the existing single service without losing its exit or domains.
-    return [{key: state.get(key) for key in
-             ('profile', 'country', 'protocol', 'domains', 'include_ip_sb', 'proxy',
-              'container', 'updated_at', 'exit_check')}]
+        routes = [dict(route) for route in state['routes']]
+    elif state.get('active'):
+        routes = [{key: state.get(key) for key in
+                   ('profile', 'country', 'protocol', 'domains', 'include_ip_sb', 'proxy',
+                    'container', 'updated_at', 'exit_check')}]
+    else:
+        routes = []
+    for route in routes:
+        route.setdefault('enabled', True)
+    return routes
 
 
 def upsert_route(routes, selected):
@@ -313,15 +317,28 @@ def upsert_route(routes, selected):
     for route in routes:
         if route['profile'] == selected['profile']:
             continue
-        for domain in selected['domains']:
-            for existing in route['domains']:
-                overlap = (domain == existing or domain.endswith('.' + existing)
-                           or existing.endswith('.' + domain))
-                if overlap and route['proxy'] != selected['proxy']:
-                    raise ValueError('domain %s conflicts with saved service %s; other services were not changed'
-                                     % (domain, route['profile']))
+        if route.get('enabled', True) and selected.get('enabled', True):
+            for domain in selected['domains']:
+                for existing in route['domains']:
+                    overlap = (domain == existing or domain.endswith('.' + existing)
+                               or existing.endswith('.' + domain))
+                    if overlap and route['proxy'] != selected['proxy']:
+                        raise ValueError('domain %s conflicts with saved service %s; other services were not changed'
+                                         % (domain, route['profile']))
         kept.append(dict(route))
     return kept + [dict(selected)]
+
+
+def state_with_routes(previous, routes, selected_profile=None):
+    state = dict(previous)
+    if routes:
+        selected = next((r for r in routes if r['profile'] == (selected_profile or previous.get('profile'))), routes[-1])
+        state.update(selected)
+    else:
+        state.update(profile=None, country=None, protocol=None, domains=[], enabled=False,
+                     include_ip_sb=False, proxy=None, container=None, gluetun=None, exit_check=None)
+    state.update(active=any(r.get('enabled', True) for r in routes), routes=routes, updated_at=int(time.time()))
+    return state
 
 
 def delete_service_state(previous, profile_id):
@@ -329,20 +346,14 @@ def delete_service_state(previous, profile_id):
     remaining = [route for route in routes if route['profile'] != profile_id]
     if len(remaining) == len(routes):
         return None
-    state = dict(previous)
-    if remaining:
-        selected = next((r for r in remaining if r['profile'] == previous.get('profile')), remaining[-1])
-        state.update(selected)
-        state['active'] = True
-    else:
-        state.update(active=False, profile=None, country=None, protocol=None, domains=[],
-                     include_ip_sb=False, proxy=None, container=None, gluetun=None, exit_check=None)
-    state.update(routes=remaining, updated_at=int(time.time()))
-    return state
+    return state_with_routes(previous, remaining)
 
 
 def candidate_config(current, routes):
     clean = remove_managed_artifacts(current)
+    routes = [r for r in routes if r.get('enabled', True)]
+    if not routes:
+        return clean
     lines = [MANAGED_BEGIN, '# managed_by = v2ray-sidecar-admin-api', '']
     tags = {}
     for route in routes:
@@ -494,7 +505,7 @@ def protected_proxy_ports():
 
 def preferred_proxy_port(country):
     state = load_json(STATE_PATH, {})
-    address = state.get("proxy", "")
+    address = state.get("proxy") or ""
     if state.get("country") == country and re.fullmatch(r"127\.0\.0\.1:[0-9]+", address):
         return int(address.split(":")[1])
     return int(PROXY_PORT)
@@ -662,6 +673,26 @@ class Handler(BaseHTTPRequestHandler):
                 with MUTATION_LOCK:
                     self.handle_apply(payload)
                 return
+            if self.path == "/api/routes/preview":
+                current = read_text(CONFIG_PATH)
+                saved = load_json(STATE_PATH, {})
+                routes = saved_routes(saved)
+                try:
+                    preview = preview_route(current, payload.get('domain'), routes)
+                except ValueError as error:
+                    error_response(self, 400, str(error))
+                    return
+                host = preview['domain']
+                preview['paused_services'] = [r['profile'] for r in routes if not r.get('enabled', True)
+                                             and any(host == d or host.endswith('.' + d) for d in r['domains'])]
+                preview['config_matches_state'] = (saved.get('config_sha256') == digest(current)
+                                                   if saved.get('config_sha256') else None)
+                json_response(self, 200, {'ok': True, 'preview': preview})
+                return
+            if self.path == "/api/routes/toggle":
+                with MUTATION_LOCK:
+                    self.handle_toggle(payload)
+                return
             if self.path == "/api/routes/delete":
                 with MUTATION_LOCK:
                     self.handle_delete(payload)
@@ -708,7 +739,7 @@ class Handler(BaseHTTPRequestHandler):
             error_response(self, error.status, str(error))
             return
         except Exception as exc:
-            if self.path in ('/api/apply', '/api/clear', '/api/routes/delete'):
+            if self.path in ('/api/apply', '/api/clear', '/api/routes/delete', '/api/routes/toggle'):
                 transaction = route_transaction()
                 if not getattr(exc, 'transaction_result', None):
                     transaction.fail(exc)
@@ -740,65 +771,105 @@ class Handler(BaseHTTPRequestHandler):
         json_response(self, 200, {'ok': True, 'state': current_state(), 'deleted_profile': profile_id,
                                  'backup': result['backup']})
 
+    def handle_toggle(self, payload):
+        profile_id = str(payload.get('profile') or '')
+        enabled = payload.get('enabled')
+        if not profile_id or not isinstance(enabled, bool):
+            error_response(self, 400, 'profile and boolean enabled are required')
+            return
+        transaction = route_transaction()
+        with transaction.locked():
+            transaction.recover(reload_checkpoint, confirm_reload)
+            validate_route_state()
+            current = read_text(CONFIG_PATH)
+            previous = load_json(STATE_PATH, {})
+            routes = saved_routes(previous)
+            selected = next((dict(r) for r in routes if r['profile'] == profile_id), None)
+            if selected is None:
+                error_response(self, 404, 'saved service route was not found; refresh the page')
+                return
+            if previous.get('config_sha256') != digest(current):
+                raise RouteError('configuration changed externally; reconcile saved routes before toggling')
+            if selected.get('enabled', True) == enabled:
+                json_response(self, 200, {'ok': True, 'state': current_state()})
+                return
+            selected.update(enabled=enabled, updated_at=int(time.time()))
+            info, expected_code = None, None
+            if enabled:
+                info = start_gluetun(selected['country'], selected.get('protocol') or 'udp')['exit']
+                expected_code = next((c.get('code') for c in country_options() if c['name'] == selected['country']), None)
+                selected.update(proxy=info['proxy'], container=info['container'],
+                                exit_check=verify_exit(info, expected_code))
+            routes = upsert_route(routes, selected)
+            state = state_with_routes(previous, routes, profile_id)
+            candidate = candidate_config(current, routes)
+            def postcheck():
+                if info:
+                    verify_exit(info, expected_code)
+                verify_forwarding()
+            state, result = transaction.execute(current, candidate, state, validate_route_config,
+                                                reload_checkpoint, confirm_reload, postcheck)
+        json_response(self, 200, {'ok': True, 'state': current_state(), 'backup': result['backup']})
+
     def handle_apply(self, payload):
-        profile_id = str(payload.get("profile") or "custom")
-        country = str(payload.get("country") or "").strip()
-        protocol = str(payload.get("protocol") or "udp").strip().lower()
-        include_ip_sb = bool(payload.get("include_ip_sb", True))
+        profile_id = str(payload.get('profile') or 'custom')
+        country = str(payload.get('country') or '').strip()
+        protocol = str(payload.get('protocol') or 'udp').strip().lower()
+        include_ip_sb = bool(payload.get('include_ip_sb', True))
         if profile_id != 'custom' and profile_id not in {p['id'] for p in PROFILES}:
             raise ValueError('choose a known service profile')
-        country_names = countries()
-        if not country or country not in country_names:
-            raise ValueError("choose a valid NordVPN country")
-        # Explicit domains are the complete edited list, including removals.
+        if country not in countries() or protocol not in ('udp', 'tcp'):
+            raise ValueError('choose a valid NordVPN country and protocol')
         domains = payload.get('domains') if 'domains' in payload else profile_domains(profile_id)
         if not isinstance(domains, list) or any(not isinstance(d, str) for d in domains):
             raise ValueError('domains must be a list of strings')
         domains = list(domains)
         if include_ip_sb:
-            domains.extend(["ip.sb", "api.ip.sb"])
+            domains.extend(['ip.sb', 'api.ip.sb'])
         else:
             domains = [d for d in normalize_domains(domains) if d not in ('ip.sb', 'api.ip.sb')]
         domains = normalize_domains(domains)
         if not domains:
-            raise ValueError("no domains selected")
+            raise ValueError('no domains selected')
         transaction = route_transaction()
         with transaction.locked():
             transaction.recover(reload_checkpoint, confirm_reload)
             validate_route_state()
             current = read_text(CONFIG_PATH)
             validate_route_config(current)
-            gluetun = start_gluetun(country, protocol)
-            info = gluetun["exit"]
-            expected_code = next((c.get('code') for c in country_options() if c['name'] == country), None)
-            exit_check = verify_exit(info, expected_code)
             previous = load_json(STATE_PATH, {})
-            if previous.get('active') and previous.get('config_sha256') != digest(current):
+            routes = saved_routes(previous)
+            if routes and previous.get('config_sha256') != digest(current):
                 raise RouteError('configuration changed externally; reconcile saved routes before applying')
-            state = {
-            "active": True,
-            "profile": profile_id,
-            "country": country,
-            "protocol": protocol,
-            "domains": domains,
-            "include_ip_sb": include_ip_sb,
-            "outbound": OUTBOUND_TAG,
-            "proxy": info["proxy"],
-            "container": info["container"],
-            "updated_at": int(time.time()),
-            "gluetun": gluetun.get("status", {}),
-            'exit_check': exit_check,
+            existing = next((r for r in routes if r['profile'] == profile_id), {})
+            enabled = existing.get('enabled', True)
+            info, expected_code, exit_check = None, None, None
+            if enabled:
+                info = start_gluetun(country, protocol)['exit']
+                expected_code = next((c.get('code') for c in country_options() if c['name'] == country), None)
+                exit_check = verify_exit(info, expected_code)
+            same_exit = existing.get('country') == country and existing.get('protocol') == protocol
+            selected = {
+                'profile': profile_id, 'country': country, 'protocol': protocol,
+                'domains': domains, 'include_ip_sb': include_ip_sb, 'enabled': enabled,
+                'outbound': OUTBOUND_TAG,
+                'proxy': info['proxy'] if info else (existing.get('proxy') if same_exit else None),
+                'container': info['container'] if info else (existing.get('container') if same_exit else None),
+                'exit_check': exit_check if info else (existing.get('exit_check') if same_exit else None),
+                'updated_at': int(time.time()),
             }
-            routes = upsert_route(saved_routes(previous), state)
-            state['routes'] = routes
+            routes = upsert_route(routes, selected)
+            state = state_with_routes(previous, routes, profile_id)
             candidate = candidate_config(current, routes)
             def postcheck():
-                verify_exit(info, expected_code)
+                if info:
+                    verify_exit(info, expected_code)
                 verify_forwarding()
             state, result = transaction.execute(current, candidate, state, validate_route_config,
                                                 reload_checkpoint, confirm_reload, postcheck)
-        json_response(self, 200, {"ok": True, "state": current_state(), "backup": result['backup'],
-                                 "exit_check": exit_check, "ip_check": check_ip(), "exit_reused": info["reused"]})
+        json_response(self, 200, {'ok': True, 'state': current_state(), 'backup': result['backup'],
+                                 'exit_check': exit_check, 'ip_check': check_ip() if enabled else None,
+                                 'exit_reused': info['reused'] if info else False})
 
 
 def main():

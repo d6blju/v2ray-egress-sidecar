@@ -18,7 +18,7 @@ install -d -m 0700 "$backup"
 printf '%s\n' "$before" > "$backup/pids"
 printf '%s\n' "$hashes" > "$backup/hashes"
 paths=(etc/nginx/nginx.conf usr/local/bin/v2ray-sidecar-admin-api usr/local/bin/v2ray-sidecar-dashboard-render var/www/v2ray-sidecar-dashboard/control.html)
-optional=("$dropin" "$lib/sidecar_auth.py" "$lib/sidecar_nginx_auth.py" "$web/auth.js" "$web/login.html" "$web/index.html")
+optional=("$dropin" "$lib/sidecar_route_preview.py" "$lib/sidecar_auth.py" "$lib/sidecar_nginx_auth.py" "$web/auth.js" "$web/login.html" "$web/index.html")
 for path in "${optional[@]}"; do
     if [[ -f "$path" ]]; then
         paths+=("${path#/}")
@@ -43,13 +43,14 @@ rollback() {
 trap rollback ERR
 systemctl stop "$service"
 install -m 0644 "$stage/deploy/sidecar_auth.py" "$lib/sidecar_auth.py"
+install -m 0644 "$stage/deploy/sidecar_route_preview.py" "$lib/sidecar_route_preview.py"
 install -m 0644 "$stage/deploy/sidecar_nginx_auth.py" "$lib/sidecar_nginx_auth.py"
 install -m 0755 "$stage/deploy/v2ray-egress-admin-api.py" /usr/local/bin/v2ray-sidecar-admin-api
 install -m 0755 "$stage/deploy/v2ray-egress-dashboard-render.py" /usr/local/bin/v2ray-sidecar-dashboard-render
 for name in control.html auth.js login.html; do install -m 0644 "$stage/web/$name" "$web/$name"; done
 install -d "$(dirname "$dropin")"
 printf '%s\n' '[Service]' "Environment=SIDECAR_HTPASSWD_FILE=$credentials" 'Environment=SIDECAR_COOKIE_SECURE=1' 'Environment=SIDECAR_COOKIE_PATH=/sidecar-stats/' > "$dropin"
-python3 -m py_compile "$lib/sidecar_auth.py" /usr/local/bin/v2ray-sidecar-admin-api
+python3 -m py_compile "$lib/sidecar_route_preview.py" "$lib/sidecar_auth.py" /usr/local/bin/v2ray-sidecar-admin-api
 PYTHONPATH="$lib" python3 "$lib/sidecar_nginx_auth.py" /etc/nginx/nginx.conf
 nginx -t
 systemctl daemon-reload

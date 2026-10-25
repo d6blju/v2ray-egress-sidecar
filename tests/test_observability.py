@@ -118,7 +118,8 @@ class IncrementalTests(unittest.TestCase):
         self.append([self.row()])
         out = os.path.join(self.tmp.name, 'web')
         os.mkdir(out)
-        previous = {'generated_at': 123, 'loaded_rows': 42, 'windows': {'5m': {'total': 9}}}
+        previous = {'generated_at': 123, 'loaded_rows': 42, 'windows': {'5m': {'total': 9}},
+                    'diagnostics': {'state': 'watching'}}
         with open(os.path.join(out, 'stats.json'), 'w') as fh:
             json.dump(previous, fh)
         argv = ['renderer', '--stats', self.path, '--out', out, '--database', os.path.join(self.tmp.name, 'paused.db')]
@@ -128,6 +129,11 @@ class IncrementalTests(unittest.TestCase):
             paused = json.load(fh)
         self.assertEqual(paused['windows'], previous['windows'])
         self.assertEqual(paused['loaded_rows'], 42)
+        self.assertNotIn('diagnostics', paused)
+        with open(os.path.join(out, 'index.html'), encoding='utf-8') as fh:
+            page = fh.read()
+        self.assertNotIn('id="diagnostics"', page)
+        self.assertIn('id="kpis"', page)
         self.assertFalse(os.path.exists(os.path.join(self.tmp.name, 'paused.db')))
         with patch.object(sys, 'argv', argv), patch.object(dashboard, 'pressure', return_value=None):
             dashboard.main()
@@ -135,6 +141,7 @@ class IncrementalTests(unittest.TestCase):
             resumed = json.load(fh)
         self.assertEqual(resumed['loaded_rows'], 1)
         self.assertEqual(resumed['collection_status'], 'ok')
+        self.assertNotIn('diagnostics', resumed)
 
 
 class CpuTests(unittest.TestCase):
