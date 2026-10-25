@@ -176,6 +176,197 @@ class ControlAPITests(unittest.TestCase):
         self.assertTrue(data['state']['config_matches_state'])
         self.assertEqual(data['state']['last_transaction']['status'], 'rolled_back')
 
+    def apply_service(self, profile, domains, country='Bangladesh'):
+        status, data = self.request('/api/apply', {
+            'profile': profile, 'country': country, 'protocol': 'udp',
+            'domains': domains, 'include_ip_sb': False,
+        })
+        self.assertEqual(status, 200, data)
+        return data
+
+    def test_services_share_exit_and_edit_replaces_only_selected_domains(self):
+        first = self.apply_service('binance', ['binance.com', 'binance.us'])
+        second = self.apply_service('netflix', ['netflix.com'])
+        original_binance = second['state']['routes'][0]
+        original_netflix = second['state']['routes'][1]
+        self.assertEqual(original_binance, first['state']['routes'][0])
+        self.assertEqual(original_binance['proxy'], original_netflix['proxy'])
+        with open(self.config) as source:
+            config = source.read()
+        self.assertEqual(config.count('tag = "nord-ui"'), 1)
+        self.assertIn('domain_suffix = ".binance.us"', config)
+        self.assertIn('domain_suffix = ".netflix.com"', config)
+        edited = self.apply_service('binance', ['binance.com', 'binanceapi.com'])
+        routes = {route['profile']: route for route in edited['state']['routes']}
+        self.assertEqual(routes['netflix'], original_netflix)
+        self.assertEqual(routes['binance']['domains'], ['binance.com', 'binanceapi.com'])
+        with open(self.config) as source:
+            config = source.read()
+        self.assertNotIn('domain_suffix = ".binance.us"', config)
+        self.assertIn('domain_suffix = ".binanceapi.com"', config)
+        self.assertIn('outbound = "manual-nord"', config)
+        self.assertFalse(any(call[:2] == ['docker', 'run'] for call in self.docker.calls))
+
+    def test_edit_country_keeps_other_service_and_protects_both_exits(self):
+        self.apply_service('binance', ['binance.com'])
+        initial = self.apply_service('netflix', ['netflix.com'])
+        other = initial['state']['routes'][1]
+        self.docker.items.append(container('gluetun-hk', country='Hong Kong', port=18894))
+        options = [{'name': 'Bangladesh', 'code': 'BD'}, {'name': 'Hong Kong', 'code': 'HK'}]
+        with patch.object(admin, 'country_options', return_value=options):
+            edited = self.apply_service('binance', ['binance.com'], country='Hong Kong')
+        routes = {route['profile']: route for route in edited['state']['routes']}
+        self.assertEqual(routes['netflix'], other)
+        self.assertEqual(routes['binance']['country'], 'Hong Kong')
+        self.assertEqual(routes['binance']['proxy'], '127.0.0.1:18894')
+        self.assertEqual(admin.protected_proxy_ports(), {18891, 18894})
+        with open(self.config) as source:
+            config = source.read()
+        self.assertEqual(config.count('kind = "http_connect"'), 3)
+        self.assertIn('outbound = "manual-nord"', config)
+
+    def test_conflicting_edit_cannot_steal_another_service_domain(self):
+        self.apply_service('binance', ['binance.com'])
+        before = self.apply_service('netflix', ['netflix.com'])
+        self.docker.items.append(container('gluetun-hk', country='Hong Kong', port=18894))
+        with open(self.config) as source:
+            config_before = source.read()
+        options = [{'name': 'Bangladesh', 'code': 'BD'}, {'name': 'Hong Kong', 'code': 'HK'}]
+        with patch.object(admin, 'country_options', return_value=options):
+            status, data = self.request('/api/apply', {
+                'profile': 'netflix', 'country': 'Hong Kong',
+                'domains': ['binance.com'], 'include_ip_sb': False,
+            })
+        self.assertEqual(status, 500)
+        self.assertIn('conflict', data['details'])
+        with open(self.config) as source:
+            self.assertEqual(source.read(), config_before)
+        status, latest = self.request('/api/state')
+        self.assertEqual(latest['state']['routes'], before['state']['routes'])
+
+    def test_same_exit_shared_domain_is_retained_by_each_service(self):
+        first = self.apply_service('binance', ['shared.example', 'binance.com'])
+        second = self.apply_service('netflix', ['shared.example', 'netflix.com'])
+        self.assertEqual(second['state']['routes'][0], first['state']['routes'][0])
+        with open(self.config) as source:
+            self.assertEqual(source.read().count('domain_suffix = ".shared.example"'), 1)
+        edited = self.apply_service('binance', ['binance.com'])
+        self.assertEqual(edited['state']['routes'][0], second['state']['routes'][1])
+        with open(self.config) as source:
+            self.assertIn('domain_suffix = ".shared.example"', source.read())
+        status, deleted = self.request('/api/routes/delete', {'profile': 'binance'})
+        self.assertEqual(status, 200, deleted)
+        self.assertEqual(deleted['state']['routes'], [second['state']['routes'][1]])
+
+    def test_delete_one_service_preserves_shared_exit_and_last_delete_cleans_ui_rules(self):
+        self.apply_service('binance', ['binance.com'])
+        initial = self.apply_service('netflix', ['netflix.com'])
+        remaining = initial['state']['routes'][1]
+        status, deleted = self.request('/api/routes/delete', {'profile': 'binance'})
+        self.assertEqual(status, 200, deleted)
+        self.assertEqual(deleted['deleted_profile'], 'binance')
+        self.assertEqual(deleted['state']['routes'], [remaining])
+        self.assertTrue(deleted['state']['active'])
+        with open(self.config) as source:
+            config = source.read()
+        self.assertNotIn('domain_suffix = ".binance.com"', config)
+        self.assertIn('domain_suffix = ".netflix.com"', config)
+        self.assertIn('tag = "nord-ui"', config)
+        self.assertFalse(any(call[:2] in (['docker', 'rm'], ['docker', 'stop']) for call in self.docker.calls))
+        status, deleted = self.request('/api/routes/delete', {'profile': 'netflix'})
+        self.assertEqual(status, 200, deleted)
+        self.assertEqual(deleted['state']['routes'], [])
+        self.assertFalse(deleted['state']['active'])
+        self.assertIsNone(deleted['state']['profile'])
+        self.assertIsNone(deleted['state']['proxy'])
+        with open(self.config) as source:
+            config = source.read()
+        self.assertNotIn('nord-ui', config)
+        self.assertIn('outbound = "manual-nord"', config)
+        self.assertEqual(admin.protected_proxy_ports(), {18891})
+
+    def test_delete_postcheck_failure_restores_all_services_and_state(self):
+        self.apply_service('binance', ['binance.com'])
+        before = self.apply_service('netflix', ['netflix.com'])
+        with open(self.config) as source:
+            config_before = source.read()
+        with open(admin.STATE_PATH) as source:
+            state_before = source.read()
+        with patch.object(admin, 'verify_forwarding', side_effect=RuntimeError('forwarding failed')):
+            status, data = self.request('/api/routes/delete', {'profile': 'binance'})
+        self.assertEqual(status, 500)
+        with open(self.config) as source:
+            self.assertEqual(source.read(), config_before)
+        with open(admin.STATE_PATH) as source:
+            self.assertEqual(source.read(), state_before)
+        status, latest = self.request('/api/state')
+        self.assertEqual(latest['state']['routes'], before['state']['routes'])
+        self.assertEqual(latest['state']['last_transaction']['status'], 'rolled_back')
+        self.assertFalse(latest['state']['transaction_pending'])
+
+    def test_delete_missing_service_is_404_and_missing_profile_is_400(self):
+        before = self.apply_service('binance', ['binance.com'])
+        status, data = self.request('/api/routes/delete', {'profile': 'netflix'})
+        self.assertEqual(status, 404)
+        status, data = self.request('/api/routes/delete', {})
+        self.assertEqual(status, 400)
+        status, latest = self.request('/api/state')
+        self.assertEqual(latest['state']['routes'], before['state']['routes'])
+
+    def test_delete_requires_login_and_csrf(self):
+        self.apply_service('binance', ['binance.com'])
+        status, data = self.request('/api/routes/delete', {'profile': 'binance'}, authorized=False)
+        self.assertEqual(status, 401)
+        request = Request(self.base + '/api/routes/delete', data=b'{"profile":"binance"}',
+                          headers={'Cookie': 'sidecar_session=' + self.token, 'Content-Type': 'application/json'})
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request, timeout=3)
+        self.assertEqual(error.exception.code, 403)
+        error.exception.close()
+        status, latest = self.request('/api/state')
+        self.assertEqual([route['profile'] for route in latest['state']['routes']], ['binance'])
+
+    def test_legacy_single_route_migrates_when_another_service_is_saved(self):
+        applied = self.apply_service('binance', ['binance.com'])
+        with open(admin.STATE_PATH) as source:
+            legacy = json.load(source)
+        legacy.pop('routes')
+        with open(admin.STATE_PATH, 'w') as output:
+            json.dump(legacy, output)
+        status, viewed = self.request('/api/state')
+        self.assertEqual(viewed['state']['routes'][0]['profile'], 'binance')
+        updated = self.apply_service('netflix', ['netflix.com'])
+        self.assertEqual([route['profile'] for route in updated['state']['routes']], ['binance', 'netflix'])
+        self.assertEqual(updated['state']['routes'][0]['domains'], applied['state']['domains'])
+
+    def test_explicit_empty_domain_list_is_not_refilled_from_preset(self):
+        applied = self.apply_service('binance', ['binance.com'])
+        status, data = self.request('/api/apply', {
+            'profile': 'binance', 'country': 'Bangladesh', 'domains': [], 'include_ip_sb': False,
+        })
+        self.assertEqual(status, 500)
+        self.assertIn('no domains', data['details'])
+        status, latest = self.request('/api/state')
+        self.assertEqual(latest['state']['routes'], applied['state']['routes'])
+
+    def test_unchecking_ip_helper_removes_saved_helper_domains(self):
+        status, applied = self.request('/api/apply', {
+            'profile': 'binance', 'country': 'Bangladesh',
+            'domains': ['binance.com'], 'include_ip_sb': True,
+        })
+        self.assertEqual(status, 200, applied)
+        self.assertIn('ip.sb', applied['state']['domains'])
+        self.assertIn('api.ip.sb', applied['state']['domains'])
+        edited = self.apply_service('binance', applied['state']['domains'])
+        self.assertEqual(edited['state']['domains'], ['binance.com'])
+        self.assertFalse(edited['state']['include_ip_sb'])
+        with open(self.config) as source:
+            config = source.read()
+        # The manually managed ip.sb rule survives, but its temporary UI copy does not.
+        self.assertEqual(config.count('domain_suffix = ".ip.sb"'), 1)
+        self.assertNotIn('domain_suffix = ".api.ip.sb"', config)
+        self.assertIn('outbound = "manual-nord"', config)
+
 
 class IPCheckTests(unittest.TestCase):
     def test_ipcheck_returns_country_city_and_uses_sidecar(self):

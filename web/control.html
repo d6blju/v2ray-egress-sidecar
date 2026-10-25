@@ -17,6 +17,7 @@ button{border:1px solid var(--accent);background:var(--accent);color:#fff;border
 .service-matrix{overflow:auto;margin-top:14px}.service-matrix table{border-collapse:collapse;table-layout:fixed;min-width:1080px;width:100%;font-size:13px}.service-matrix th,.service-matrix td{border:1px solid var(--line);padding:9px 6px;text-align:center;overflow-wrap:anywhere}.service-matrix th:first-child{width:64px;background:#f0f3f2}.service-matrix thead th{background:#f0f3f2}.probe-good{color:#11633a;background:#e7f5eb}.probe-bad{color:#a52b25;background:#fff0ee}.probe-warn{color:#986214;background:#fff7e6}
 @media(max-width:900px){.grid{grid-template-columns:1fr}.country-picker{grid-template-columns:1fr}.wrap{padding:12px}}
 @media(max-width:600px){.stream-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.route-list{white-space:normal}.saved-route{border-top:1px solid var(--line);padding:12px 0}.saved-route-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.saved-route p{margin:6px 0 0;overflow-wrap:anywhere}.saved-route .hint{line-height:1.6}.saved-route button{flex-shrink:0}
 </style>
 </head>
 <body>
@@ -24,21 +25,23 @@ button{border:1px solid var(--accent);background:var(--accent);color:#fff;border
 <main class="wrap">
 <section class="grid">
 <div class="panel">
-  <div class="row"><label for="profile">Site / app profile</label><select id="profile"></select></div>
+  <div class="row"><label for="profile">Site / app profile</label><select id="profile"></select><div class="hint">每个服务单独保存，其他服务保持原有出口。同一国家和协议可共用出口。</div></div>
   <div class="row"><label for="country-search">NordVPN country / 国家</label><div class="country-picker"><input id="country-search" placeholder="输入中文、英文或代码，例如：孟 / bang / bd"><select id="country"></select></div><div id="country-hint" class="hint"></div></div>
   <div class="row"><label for="domains">Domain suffixes routed to selected country</label><textarea id="domains" spellcheck="false"></textarea></div>
   <div class="checks">
     <label><input type="checkbox" id="include-ip" checked>Route ip.sb with this rule</label>
     <label><input type="checkbox" id="openvpn-tcp">Use OpenVPN TCP</label>
   </div>
+  <div id="edit-hint" class="hint" role="status" hidden style="margin:12px 0"></div>
   <div class="actions" style="margin-top:14px">
-    <button id="apply">Apply Route</button>
+    <button id="apply">保存此服务路由</button>
+    <button id="cancel-edit" class="secondary" hidden>取消编辑</button>
     <button id="check" class="secondary">Check ip.sb</button>
-    <button id="clear" class="danger">Clear UI Rules</button>
+    <button id="clear" class="danger">清空全部服务路由</button>
   </div>
 </div>
 <div class="panel">
-  <div class="row"><label>Current UI-managed route</label><div id="current" class="status">Loading...</div></div>
+  <div class="row"><label>已保存的服务路由</label><div id="current" class="status">Loading...</div></div>
   <div class="row"><label>Result</label><div id="result" class="status">Idle</div></div>
 </div>
 </section>
@@ -54,7 +57,7 @@ button{border:1px solid var(--accent);background:var(--accent);color:#fff;border
 </section>
 </main>
 <script>
-let state=null, stats=null;
+let state=null, stats=null, editingProfile=null;
 const $=id=>document.getElementById(id);
 const basePath=location.pathname.includes('/sidecar-stats/')?'/sidecar-stats/':'./';
 const regionNames=(typeof Intl!=='undefined'&&Intl.DisplayNames)?new Intl.DisplayNames(['zh-CN'],{type:'region'}):null;
@@ -106,20 +109,51 @@ function updateCountryHint(){
 }
 function renderCurrent(){
  const s=state.state||{};
- const lines=[];
- lines.push(`active: ${s.active?'yes':'no'}`);
- if(s.country)lines.push(`country: ${countryLabel(s.country)}`);
- if(s.profile)lines.push(`profile: ${s.profile}`);
- if(s.proxy)lines.push(`proxy: ${s.proxy}`);
- if(s.gluetun)lines.push(`gluetun: ${s.gluetun.status||'?'} / ${s.gluetun.health||'?'}`);
- if(s.container)lines.push(`container: ${s.container}`);
- lines.push(`事务: ${s.transaction_pending?'处理中 / 待恢复':'无待处理事务'}`);
- lines.push(`配置与已提交状态: ${s.config_matches_state===true?'一致':s.config_matches_state===false?'不一致':'尚未验证'}`);
- const t=s.last_transaction;
- if(t){lines.push(`最近事务: ${t.status} (${new Date(t.updated_at*1000).toLocaleString()})`);if(t.error)lines.push(`失败原因: ${t.error}`);if(t.rollback_error)lines.push(`回滚问题: ${t.rollback_error}`)}
- if(s.last_failure&&s.last_failure.updated_at!==t?.updated_at)lines.push(`上次失败: ${new Date(s.last_failure.updated_at*1000).toLocaleString()} ${s.last_failure.error||s.last_failure.status}`);
- if(s.domains&&s.domains.length)lines.push(`domains:\n  ${s.domains.join('\n  ')}`);
- $('current').textContent=lines.join('\n');
+ const routes=s.routes||(s.active?[s]:[]);
+ const status=s.config_matches_state===true?'一致':s.config_matches_state===false?'配置已在外部修改':'尚未校验';
+ $('current').className='status route-list';
+ $('current').innerHTML=`<p>已保存 <strong>${routes.length}</strong> 个服务 · ${new Set(routes.map(r=>r.proxy)).size} 个出口</p>`+
+ routes.map(r=>{
+  const name=profileById(r.profile)?.name||r.profile;
+  return `<div class="saved-route"><div class="saved-route-head"><strong>${esc(name)} → ${esc(countryLabel(r.country))}</strong><div class="actions"><button type="button" class="secondary edit-route" data-profile="${esc(r.profile)}" aria-label="编辑 ${esc(name)} 路由">编辑</button><button type="button" class="danger delete-route" data-profile="${esc(r.profile)}" aria-label="删除 ${esc(name)} 路由">删除</button></div></div><p class="hint">出口：${esc(r.proxy||'—')} · VPN 协议：${esc(r.protocol||'udp')}<br>域名：${esc((r.domains||[]).join(', '))}</p></div>`;
+ }).join('')+(!routes.length?'<p class="muted">尚未保存服务路由</p>':'')+
+ `<p class="hint">配置校验：${esc(status)}${s.transaction_pending?' · 有待恢复的路由事务':''}${s.last_transaction?' · 最近保存：'+esc(s.last_transaction.status):''}</p>`;
+ $('current').querySelectorAll('.edit-route').forEach(button=>button.onclick=()=>editRoute(button.dataset.profile));
+ $('current').querySelectorAll('.delete-route').forEach(button=>button.onclick=()=>deleteRoute(button.dataset.profile));
+}
+function resetEditing(){
+ editingProfile=null;$('profile').disabled=false;
+ $('edit-hint').hidden=true;$('cancel-edit').hidden=true;
+ $('apply').textContent='保存此服务路由';
+}
+function editRoute(profile){
+ const saved=(state.state.routes||[]).find(r=>r.profile===profile);
+ if(!saved){setResult('服务已不存在，请刷新页面。',true);return}
+ $('profile').value=profile;
+ $('profile').onchange();
+ editingProfile=profile;$('profile').disabled=true;
+ const name=profileById(profile)?.name||profile;
+ $('edit-hint').textContent=`正在编辑 ${name}：保存后只更新此服务的国家和完整域名列表。`;
+ $('edit-hint').hidden=false;$('cancel-edit').hidden=false;
+ $('apply').textContent=`保存 ${name} 的修改`;
+ $('domains').scrollIntoView({behavior:'smooth',block:'center'});
+ $('country').focus({preventScroll:true});
+}
+$('cancel-edit').onclick=()=>{resetEditing();renderState();setResult('已取消编辑，路由未修改。')};
+async function deleteRoute(profile){
+ const name=profileById(profile)?.name||profile;
+ if(!confirm(`确定删除 ${name} 的已保存路由？其他服务不受影响；此服务将按剩余规则或默认直连处理。`))return;
+ const buttons=() => document.querySelectorAll('#current button, #apply, #clear');
+ buttons().forEach(button=>button.disabled=true);
+ setResult(`正在删除 ${name} 的路由…`);
+ try{
+  const data=await fetchJson('api/routes/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile})});
+  state.state=data.state;if(editingProfile===profile){resetEditing();renderState()}else{renderCurrent()}
+  setResult(`已删除 ${name} 的路由。其余 ${(data.state.routes||[]).length} 个服务保持原有出口。`);
+ }catch(e){
+  setResult(String(e),true);
+  try{const latest=await fetchJson('api/state');state.state=latest.state;renderCurrent()}catch(_){}
+ }finally{buttons().forEach(button=>button.disabled=false)}
 }
 function renderState(){
  allCountryOptions=countryOptions().sort((a,b)=>countryLabel(a).localeCompare(countryLabel(b),'zh-CN'));
@@ -127,14 +161,11 @@ function renderState(){
  $('profile').innerHTML='<option value="custom">Custom</option>'+state.profiles.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
  const current=state.state||{};
  const selectedCountry=current.country||($('country').value)||((allCountryOptions[0]||{}).name);
+ $('country-search').value='';
  renderCountryOptions(selectedCountry);
  updateCountryHint();
  if(current.profile)$('profile').value=current.profile;
- if(current.domains&&current.domains.length)putDomains(current.domains);
- else {
-   const p=profileById($('profile').value);
-   if(p)putDomains(p.domains);
- }
+ putDomains(current.domains?.length?current.domains:(profileById($('profile').value)?.domains||[]));
  $('include-ip').checked=current.include_ip_sb!==false;
  $('openvpn-tcp').checked=current.protocol==='tcp';
  renderCurrent();
@@ -149,7 +180,7 @@ function renderObserved(){
    const cur=new Set(domainsFromText());
    cur.add(d);
    putDomains([...cur]);
-   $('profile').value='custom';
+   resetEditing();$('profile').value='custom';
    updateStreamingPanel();
  });
 }
@@ -245,26 +276,35 @@ $('matrix-test').onclick=async()=>{
   if(streamTimer)clearTimeout(streamTimer);streamJob=data.job;renderStreamingJob(streamJob);pollStreaming(streamJob.id,++streamPollGeneration);
  }catch(e){$('stream-status').textContent=String(e);$('stream-test').disabled=!profileById($('profile').value)?.streaming;$('matrix-test').disabled=false}
 };
-$('profile').onchange=()=>{const p=profileById($('profile').value); if(p)putDomains(p.domains);updateStreamingPanel()}
+$('profile').onchange=()=>{
+ resetEditing();
+ const id=$('profile').value,p=profileById(id),s=state.state||{};
+ const saved=(s.routes||(s.active?[s]:[])).find(r=>r.profile===id);
+ putDomains(saved?saved.domains:(p?.domains||[]));
+ if(saved){$('country-search').value='';renderCountryOptions(saved.country);$('openvpn-tcp').checked=saved.protocol==='tcp';}
+ $('include-ip').checked=saved?saved.include_ip_sb===true:false;
+ updateCountryHint();updateStreamingPanel();
+}
 $('country-search').oninput=()=>{renderCountryOptions();updateStreamingPanel()};
 $('country').onchange=()=>{updateCountryHint();updateStreamingPanel()};
 $('openvpn-tcp').onchange=()=>updateStreamingPanel();
 $('apply').onclick=async()=>{
+ document.querySelectorAll('#current button, #clear, #cancel-edit').forEach(b=>b.disabled=true);
  $('apply').disabled=true; setResult('Applying route. Starting or switching Gluetun can take about 1-2 minutes...');
  try{
-  const body={profile:$('profile').value,country:$('country').value,domains:domainsFromText(),include_ip_sb:$('include-ip').checked,protocol:$('openvpn-tcp').checked?'tcp':'udp'};
+  const body={profile:editingProfile||$('profile').value,country:$('country').value,domains:domainsFromText(),include_ip_sb:$('include-ip').checked,protocol:$('openvpn-tcp').checked?'tcp':'udp'};
   const data=await fetchJson('api/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  state.state=data.state; renderCurrent();
+  state.state=data.state; resetEditing();renderState();
   setResult(`Applied (hot reload confirmed).\ncountry: ${countryLabel(data.state.country)}\ncontainer: ${data.state.container}\nexit reused: ${data.exit_reused?'yes':'no'}\n出口验证: ${formatIp(data.exit_check)}\nip.sb 路由检测: ${formatIp(data.ip_check)}\nbackup: ${data.backup}`);
  }catch(e){setResult(String(e),true);try{const latest=await fetchJson('api/state');state.state=latest.state;renderCurrent()}catch(_){}}
- finally{$('apply').disabled=false}
+ finally{$('apply').disabled=false;document.querySelectorAll('#current button, #clear, #cancel-edit').forEach(b=>b.disabled=false)}
 };
 $('clear').onclick=async()=>{
- if(!confirm('Clear only the UI-managed rules? Existing non-UI rules stay in config.'))return;
+ if(!confirm('确定清空全部已保存服务的路由？'))return;
  setResult('Clearing UI-managed rules...');
  try{
   const data=await fetchJson('api/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
-  state.state=data.state; renderCurrent(); setResult(`Cleared.\nbackup: ${data.backup}`);
+  state.state=data.state; resetEditing();renderState(); setResult(`Cleared.\nbackup: ${data.backup}`);
  }catch(e){setResult(String(e),true);try{const latest=await fetchJson('api/state');state.state=latest.state;renderCurrent()}catch(_){}}
 };
 $('check').onclick=async()=>{

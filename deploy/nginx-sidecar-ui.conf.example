@@ -16,11 +16,14 @@
 #
 # Create Basic Auth credentials:
 #   sudo htpasswd -cB /etc/nginx/.htpasswd-v2ray-egress-sidecar sidecar
+# On systems whose crypt() does not support bcrypt, use htpasswd -c -5 instead.
+# See docs/authentication.md; keep passwords and password files out of Git.
 #
 # Local-only dashboard:
 server {
     listen 127.0.0.1:18081;
     server_name _;
+    include /etc/nginx/mime.types;
 
     root /var/www/v2ray-egress-sidecar-dashboard;
     index index.html;
@@ -38,6 +41,7 @@ server {
 }
 
 # Public path example: paste this inside your existing HTTPS server block.
+# Include /etc/nginx/mime.types in that server (or its enclosing http block).
 #
 # location = /sidecar-stats {
 #     return 301 /sidecar-stats/;

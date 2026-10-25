@@ -235,5 +235,12 @@
     "name": "Docker",
     "domains": ["docker.com", "docker.io", "dhi.io"],
     "sources": ["https://docs.docker.com/desktop/enterprise/allow-list/"]
+  },
+  {
+    "id": "polymarket",
+    "name": "Polymarket",
+    "probe_url": "https://polymarket.com/",
+    "domains": ["polymarket.com"],
+    "sources": ["https://docs.polymarket.com/api-reference/predictions/overview"]
   }
 ]

@@ -272,10 +272,19 @@ https://your-domain.example/sidecar-stats/control.html
 1. 选择网站/应用 profile，或手动输入域名后缀。
 2. 选择 NordVPN 国家。国家搜索支持中文、英文和国家代码，取决于浏览器是否支持地区名称。
 3. 选择 OpenVPN UDP 或 TCP。
-4. 点击 `Apply Route`。
+4. 点击“保存此服务路由”。每个 profile 单独保存；先保存 Polymarket，再保存币安，
+   两者会并存。同一国家和 VPN 协议的服务复用出口。
 5. 点击 `Check ip.sb` 查看当前 sidecar 出口 IP、中文国家、国家代码，以及可用的城市。
    地区查询失败时，会按实测 IP 使用备用查询并标明来源，不会假定其他域名也走相同出口。
-6. 点击 `Clear UI Rules` 只删除 UI 管理的规则，不删除手写规则。
+6. 点击已保存服务旁的“编辑”，自动回填国家、协议和域名；编辑期间锁定 profile。
+   保存会替换该服务的完整域名列表，从输入框移除的域名不会再被预设自动补回。
+   “取消编辑”放弃表单变更，不修改已有路由。
+7. 点击服务旁的“删除”只移除该服务的路由；“清空全部服务路由”移除全部 UI 规则。
+   两种操作均保留手写规则。
+
+`Custom` 也是一个独立保存的 profile，再次保存会更新它，不会新增另一个无名服务。
+域名与其他服务完全重复，或重叠的域名后缀被分配到不同出口时，会拒绝保存并提示冲突；
+不会从其他服务中自动夺走域名。
 
 应用或清理 UI 规则不会重启 V2Ray/Xray。sidecar 会热加载有效配置，UI 写入复用
 出口的实际本机端口。清理规则后保留可复用容器。同国家的旧重复容器，只有在
@@ -301,12 +310,15 @@ python3 ./deploy/v2ray-sidecar-stats.py errors --top 30 --sort errors
 `avg_life` 表示平均连接/UDP association 存活时间，不是 ping 延迟。
 
 统计页面的 `Top Services`、命令行的 `service` 模式和路由界面的应用列表共用
-[`deploy/service-domains.json`](deploy/service-domains.json) 域名表。当前包含 38 个服务，
-包括 GitHub、X/Twitter、ChatGPT、Claude、YouTube、Netflix、Binance、Telegram、Discord、
+[`deploy/service-domains.json`](deploy/service-domains.json) 域名表。
+包括 GitHub、X/Twitter、ChatGPT、Claude、YouTube、Netflix、Binance、Polymarket、Telegram、Discord、
 Meta、Spotify、Steam、Apple、Microsoft、Slack、Zoom、Dropbox 和 Docker 等。
 例如 `github.com`、`githubusercontent.com`、`githubassets.com`、`github.io`
 及其子域名统一显示为 `GitHub`。同一服务、同一出口的连接数、字节、错误和平均
 存活时间合并统计；`Top Domains` 仍保留各个域名。
+
+Polymarket 预设使用 `polymarket.com` 域名后缀，覆盖其 API 等子域名。连通性检测只探测
+首页，不代表已验证登录或交易；第三方登录、钱包、客服和统计域名不会自动包含在此后缀中。
 
 匹配时优先使用更具体的域名。`gvt1.com` 等 Google 共用下载域名归到 `Google`，
 能够明确识别的 YouTube 和 Google Play 域名单独归类。共享第三方 CDN 和只有 IP
@@ -321,6 +333,8 @@ Python 公共模块，安装位置为 `/usr/local/lib/v2ray-egress-sidecar/`。
 直到在界面上重新应用对应的 profile。
 
 分类测试：`python3 -m unittest discover -s tests -v`。
+登录和路由编辑界面回归测试：`node tests/test_auth_client.js`、
+`node tests/test_control_client.js`。
 
 ## 路由事务与失败回滚
 
@@ -329,7 +343,7 @@ Python 公共模块，安装位置为 `/usr/local/lib/v2ray-egress-sidecar/`。
 失败时恢复旧配置和状态，并确认回滚加载。私有事务日志会同步到磁盘，管理 API 重启后自动恢复中断操作；
 发现外部编辑冲突时保留外部修改，暂停后续变更，等待核对。
 
-页面显示待恢复事务、配置与已提交状态是否一致、最近一次事务及上次失败原因。
+页面显示待恢复事务、配置与已提交状态是否一致和最近一次事务；私有状态目录保留上次失败原因。
 所选出口验证与 `ip.sb` 的路由检测分开展示，避免手动规则导致两者国家不同而混淆。
 已有连接保持原出口；候选配置加载后、后置检测失败并回滚前，新连接可能短暂使用候选出口。
 V2Ray 和转发 sidecar 始终保持运行。
@@ -365,6 +379,10 @@ sudo systemctl status v2ray-cpu-diagnose.service
 sudo cat /var/log/v2ray-cpu-diagnostics/status.json
 sudo cat /var/log/v2ray-cpu-diagnostics/latest.txt
 ```
+
+CPU 区分开展示当前监控状态、CPU、告警阈值和 PID，以及默认折叠的历史事件。
+说明使用中文，时间使用北京时间；历史峰值不代表当前仍有故障，CPU 100% 约为占满
+一个逻辑核心。监控心跳过期时会标明数据已过期，不将旧采样作为当前状态。
 
 首次 CPU 事件发生后才会生成 `latest.txt` 和 `latest.json`；没有事件时仍可通过
 `status.json` 查看心跳和最新 CPU 采样。首次导入可能分为多个批次，页面通过

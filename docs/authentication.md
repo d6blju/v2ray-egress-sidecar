@@ -14,7 +14,14 @@ the same local password file; it independently verifies credentials rather than
 trusting a forwarded username header. The account and password do not change.
 After the first successful verification, the API stores a salted
 PBKDF2-HMAC-SHA256 verifier (600,000 iterations). APR1 migration requires OpenSSL;
-bcrypt migration requires system `crypt` support. Do not downgrade password hashes.
+bcrypt migration requires system `crypt` support. Nginx uses the same system
+capability for Basic Auth: an unsupported `$2y$` verifier can produce HTTP 500
+with `crypt_r() failed (22: Invalid argument)`. On such systems, back up the
+password file and interactively regenerate only the affected account with
+SHA-512 crypt, using `htpasswd -5 FILE USER` (without `-c` for an existing file).
+The original plaintext password is required; an existing bcrypt hash cannot be
+converted to another format. Preserve restrictive ownership and permissions,
+and verify successful and rejected credentials before considering it fixed.
 Changing or deleting a migrated account in the Basic Auth file invalidates its
 sessions. Existing browser Basic Auth credentials establish the first session
 automatically. After logout, explicit form login is required instead of silently
@@ -65,6 +72,16 @@ use `auth_request /_sidecar_session_check`, not just a JavaScript redirect; this
 also protects `stats.json`. Login HTML and `auth.js` are exempt from the session
 gate, but retain the existing outer Basic Auth gate. API requests go directly to
 the session-aware backend; do not replace backend checks with trusted headers.
+
+The UI omits the account/logout toolbar. Session verification and CSRF checks
+remain active; automation can still call the authenticated logout endpoint.
+
+Include `/etc/nginx/mime.types` in the relevant `http` or server block so static
+assets have their correct content types. In particular, `auth.js` must not be
+served as `text/plain` together with `X-Content-Type-Options: nosniff`, because
+browsers will block it and no statistics will load. The migration helper adds
+an explicit JavaScript default type, including when upgrading an existing v1
+session gate. Run it again, test Nginx configuration, and gracefully reload.
 
 The example in `deploy/nginx-sidecar-ui.conf.example` explains how to augment an
 existing Basic-protected `/sidecar-stats/` location safely:
