@@ -1,7 +1,8 @@
 # Route transactions and recovery
 
-Apply and Clear UI Rules now use the same persistent transaction. Manual rules
-and unrelated outbounds remain outside the UI-managed block. An apply performs:
+Saving, deleting one saved service and clearing all saved services use the same
+persistent transaction. Manual rules and unrelated outbounds remain outside the
+UI-managed block. An apply performs:
 
 1. Validate the existing configuration with the Rust parser before creating or
    reusing an exit. Reject damaged UI block markers and invalid state JSON.
@@ -36,8 +37,9 @@ exit ports from container cleanup. A failed new exit can remain cached for reuse
 it does not replace a working country's container. There is no implicit direct
 fallback for traffic assigned to an unavailable VPN.
 
-The page shows configuration/state agreement, pending recovery, the last
-transaction and the previous failure even after a later success. Selected-exit
+The page shows all saved services and their exits, configuration/state agreement,
+pending recovery and the last transaction. A previous failure also remains in
+the private state directory after a later success. Selected-exit
 validation is separate from the `ip.sb` check: `ip.sb` can intentionally have a
 different manual route. A successful anonymous HTTPS/country probe does not prove
 that a streaming or financial service accepts that VPN IP.
@@ -53,6 +55,37 @@ Transaction files/backups are private (0600). Configuration mode and ownership
 are preserved on replacement. Backups are not automatically pruned by this change;
 retain those needed for recovery and manage their disk usage separately. These
 files, logs, databases and credentials must never be published to Git.
+
+## Saved service routes
+
+Each profile ID identifies one saved service route. A legacy active single-route
+state is migrated on the next save without dropping its domains or exit. Saving
+another profile adds a route; saving an existing profile replaces only that
+profile. `Custom` is one such profile, so repeated custom saves update the same
+slot.
+
+The control page lists every saved service with Edit and Delete buttons. Edit
+backfills the saved country, protocol and domains and locks the profile selector
+until save or cancel. A supplied domain list is authoritative: domains removed
+from the form are not restored from the preset. A request that omits `domains`
+uses the profile's defaults. Empty domain lists are rejected unless the separate
+`ip.sb` option supplies domains. Exact domains owned by another saved profile,
+and overlapping suffixes on different exits, are rejected without modifying that
+other profile.
+
+Services using the same country and VPN protocol can reuse one container and
+proxy. The candidate configuration emits one outbound per distinct saved proxy,
+with service domain rules referring to it. More specific suffixes are ordered
+before broader suffixes. All referenced ports remain protected from container
+cleanup, including the ports needed for transaction rollback.
+
+`POST /api/routes/delete` takes a saved `profile` and deletes only that entry.
+It requires the same authenticated session and CSRF token as Apply. Missing
+profiles return 404; external configuration edits block deletion. Removing the
+last service leaves no UI-managed rules. Delete does not stop a shared exit or
+remove manual rules. Clear removes every UI-managed service route. Both use
+validation, atomic publication, hot-reload acknowledgement and rollback rather
+than editing only the state file.
 
 ## Install or upgrade
 

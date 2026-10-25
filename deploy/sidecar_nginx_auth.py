@@ -33,9 +33,26 @@ def block_end(text, start):
     raise ValueError('unterminated nginx block')
 
 
+def javascript_type(text):
+    """Keep nosniff-safe JS even when the parent server has no MIME map."""
+    matches = list(re.finditer(r'(?m)^\s*location\s+=\s+/sidecar-stats/auth\.js\s*\{', text))
+    if len(matches) != 1:
+        raise ValueError('expected exactly one auth.js location')
+    match = matches[0]
+    end = block_end(text, match.end() - 1)
+    body = text[match.end():end - 1]
+    directive = 'default_type application/javascript;'
+    if directive in body:
+        return text
+    if re.search(r'\bdefault_type\s+[^;]+;', body):
+        body = re.sub(r'\bdefault_type\s+[^;]+;', directive, body)
+        return text[:match.end()] + body + text[end - 1:]
+    return text[:match.end()] + '\n            ' + directive + text[match.end():]
+
+
 def protect(text):
     if '# sidecar-session-guard-v1' in text:
-        return text
+        return javascript_type(text)
     matches = list(re.finditer(r'(?m)^(\s*)location\s+/sidecar-stats/\s*\{', text))
     if len(matches) != 1:
         raise ValueError('expected exactly one sidecar static location')
@@ -88,7 +105,7 @@ def protect(text):
             add_header X-Content-Type-Options nosniff always;
             error_page 401 =302 /sidecar-stats/login.html;
 '''
-    return text[:match.start()] + gate + text[match.start():match.end()] + guard + text[match.end():]
+    return javascript_type(text[:match.start()] + gate + text[match.start():match.end()] + guard + text[match.end():])
 
 
 if __name__ == '__main__':

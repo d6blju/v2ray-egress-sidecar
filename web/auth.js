@@ -9,37 +9,10 @@
     if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
     return data;
   }
-  function widget() {
-    let element = document.getElementById('sidecar-account');
-    if (!element) {
-      element = document.createElement('div');
-      element.id = 'sidecar-account';
-      element.style.cssText = 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;font-size:13px';
-      (document.querySelector('header .wrap') || document.body).appendChild(element);
-    }
-    element.replaceChildren();
-    if (session?.authenticated) {
-      const name = document.createElement('span');
-      name.textContent = `已登录：${session.username}`;
-      const logout = document.createElement('button');
-      logout.textContent = '退出登录';
-      logout.type = 'button';
-      logout.onclick = async () => {
-        logout.disabled = true;
-        try {
-          await raw('api/logout', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': session.csrf_token}, body: '{}'});
-          session = null;
-          location.replace(endpoint('login.html'));
-        } catch (error) { logout.disabled = false; name.textContent = String(error); }
-      };
-      element.append(name, logout);
-    }
-  }
   async function ready() {
     if (session?.authenticated) return session;
     if (!pending) pending = raw('api/session', {headers: {'X-Sidecar-Session': '1'}}).then(data => {
       session = data;
-      widget();
       if (!data.authenticated && !location.pathname.endsWith('/login.html')) {
         location.replace(endpoint('login.html'));
         throw new Error('请登录');

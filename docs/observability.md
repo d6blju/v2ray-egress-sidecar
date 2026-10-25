@@ -35,6 +35,15 @@ samples, limited to one report per five minutes. Reports are root-readable only;
 the dashboard publishes the heartbeat and conclusion summary, not sockets/logs.
 The collector never restarts, signals, attaches to or reconfigures V2Ray.
 
+The dashboard presents the current monitoring state, process CPU, alert threshold
+and PID as separate cards, with the sample time in Beijing time. The Chinese
+labels distinguish a fresh sample from a stale heartbeat. CPU 100% represents
+approximately one logical core. The latest incident is collapsed by default and
+explicitly labelled historical; expanding it shows the peak and translated
+findings without treating possible causes as a diagnosis. A historical spike is
+not evidence of a current fault. Original evidence for unrecognised finding types
+remains available in the expanded details.
+
 Reports include instantaneous thread CPU, descriptor trend, host network rate,
 I/O wait/steal, bounded socket/process/journal output, and recent completed-domain,
 service, outbound and error groups from the database. Findings distinguish observed

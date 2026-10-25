@@ -303,12 +303,23 @@ Using the routing control page:
 2. Choose a NordVPN country. The country search accepts Chinese names, English
    names, and country codes when the browser supports region names.
 3. Choose OpenVPN UDP or TCP.
-4. Click `Apply Route`.
+4. Click `保存此服务路由` (save this service route). Each profile has its own saved
+   route; saving Binance after Polymarket keeps both. Services using the same
+   country and VPN protocol reuse an exit.
 5. Click `Check ip.sb` to see the current sidecar exit IP, country, country code,
    and city when available. A fallback looks up the measured IP and labels
    its source, rather than assuming different domains share an exit.
-6. Click `Clear UI Rules` to remove only the UI-managed rules from
-   `config.toml`.
+6. Use a saved service's `编辑` (edit) button to load its country, protocol and
+   domains. The profile is locked while editing. Saving replaces that service's
+   complete domain list, so removing a domain from the text box removes its rule.
+   `取消编辑` cancels the form changes without saving.
+7. Use `删除` (delete) beside a saved service to remove only its route. Use
+   `清空全部服务路由` to remove all UI-managed routes. Manual rules are preserved.
+
+`Custom` is one saved profile, not an additional unnamed route on every save.
+An exact domain already owned by another saved service is rejected. Overlapping
+suffixes assigned to different exits are also rejected; saving never takes a
+domain away from another service.
 
 Applying or clearing UI rules does not restart V2Ray/Xray. The sidecar picks up
 valid config changes through hot reload. Country exits retain their actual
@@ -336,12 +347,17 @@ python3 ./deploy/v2ray-sidecar-stats.py errors --top 30 --sort errors
 
 The dashboard's `Top Services`, the CLI's `service` mode, and the routing
 profiles use the same domain catalog: [`deploy/service-domains.json`](deploy/service-domains.json).
-It includes 38 services, such as GitHub, X/Twitter, ChatGPT, Claude, YouTube,
-Netflix, Binance, Telegram, Discord, Meta, Spotify, Steam, Apple, Microsoft, Slack,
+It includes services such as GitHub, X/Twitter, ChatGPT, Claude, YouTube,
+Netflix, Binance, Polymarket, Telegram, Discord, Meta, Spotify, Steam, Apple, Microsoft, Slack,
 Zoom, Dropbox, and Docker. For example, `github.com`, `githubusercontent.com`,
 `githubassets.com`, `github.io`, and their subdomains all appear as `GitHub`.
 Connections, bytes, errors, and average lifetime are combined per service and
 outbound; `Top Domains` still shows the individual hostnames.
+
+The Polymarket preset uses the `polymarket.com` suffix, covering its API and other
+subdomains. Its connectivity check probes the homepage; it does not verify login
+or trading. Third-party login, wallet, customer-support and analytics domains are
+not automatically included in that suffix.
 
 The most specific matching domain wins. Shared Google download domains such
 as `gvt1.com` remain under `Google`, while identifiable YouTube and Google Play
@@ -368,7 +384,8 @@ failure restores the old configuration/state and verifies the rollback. A privat
 fsynced journal recovers interrupted operations on API startup. Detected external
 edits are preserved and block further changes until reconciled.
 
-The page shows pending recovery, config/state agreement and the previous failure.
+The page shows pending recovery, config/state agreement and the last transaction;
+the private state directory also retains the previous failure.
 Selected-exit checks and `ip.sb` route checks are displayed separately. Existing
 connections retain their exit; new connections can briefly use a candidate before
 a failed postcheck rolls it back. V2Ray and the forwarding sidecar keep running.
@@ -408,6 +425,11 @@ sudo cat /var/log/v2ray-cpu-diagnostics/latest.txt
 
 `latest.txt` and `latest.json` appear after the first CPU incident. `status.json`
 shows the observer heartbeat and latest CPU sample even when no incident occurred.
+The dashboard's CPU section separates current monitoring state, CPU percentage,
+threshold and PID from a collapsed historical incident. Labels and explanations
+are in Chinese and timestamps use Beijing time. A historical CPU peak is not a
+current fault; 100% CPU is approximately one logical core. An expired heartbeat
+is shown as stale rather than presenting the old sample as current.
 Initial import may take several batches; the page shows `catching up` and backlog
 bytes until it finishes. Pressure pauses preserve the last successful statistics.
 The installer disables the old diagnostic timer. Restart only the observer to load

@@ -297,40 +297,78 @@ def remove_managed_artifacts(text):
     return "\n\n".join(kept).strip() + "\n"
 
 
-def managed_block(country, profile_id, domains, proxy_addr=None):
-    lines = [
-        MANAGED_BEGIN,
-        "# managed_by = v2ray-sidecar-admin-api",
-        "# country = %s" % country,
-        "# profile = %s" % profile_id,
-        "",
-        "[[outbounds]]",
-        'tag = "%s"' % OUTBOUND_TAG,
-        'kind = "http_connect"',
-        'addr = "%s"' % (proxy_addr or PROXY_ADDR),
-        "",
-    ]
-    for domain in domains:
-        lines.extend([
-            "[[rules]]",
-            'domain_suffix = ".%s"' % domain,
-            'outbound = "%s"' % OUTBOUND_TAG,
-            "",
-        ])
-    lines.append(MANAGED_END)
-    return "\n".join(lines).rstrip() + "\n"
+def saved_routes(state):
+    if not state.get('active'):
+        return []
+    if 'routes' in state:
+        return [dict(route) for route in state['routes']]
+    # Migrate the existing single service without losing its exit or domains.
+    return [{key: state.get(key) for key in
+             ('profile', 'country', 'protocol', 'domains', 'include_ip_sb', 'proxy',
+              'container', 'updated_at', 'exit_check')}]
 
 
-def candidate_config(current, country, profile_id, domains, proxy_addr=None):
+def upsert_route(routes, selected):
+    kept = []
+    for route in routes:
+        if route['profile'] == selected['profile']:
+            continue
+        for domain in selected['domains']:
+            for existing in route['domains']:
+                overlap = (domain == existing or domain.endswith('.' + existing)
+                           or existing.endswith('.' + domain))
+                if overlap and route['proxy'] != selected['proxy']:
+                    raise ValueError('domain %s conflicts with saved service %s; other services were not changed'
+                                     % (domain, route['profile']))
+        kept.append(dict(route))
+    return kept + [dict(selected)]
+
+
+def delete_service_state(previous, profile_id):
+    routes = saved_routes(previous)
+    remaining = [route for route in routes if route['profile'] != profile_id]
+    if len(remaining) == len(routes):
+        return None
+    state = dict(previous)
+    if remaining:
+        selected = next((r for r in remaining if r['profile'] == previous.get('profile')), remaining[-1])
+        state.update(selected)
+        state['active'] = True
+    else:
+        state.update(active=False, profile=None, country=None, protocol=None, domains=[],
+                     include_ip_sb=False, proxy=None, container=None, gluetun=None, exit_check=None)
+    state.update(routes=remaining, updated_at=int(time.time()))
+    return state
+
+
+def candidate_config(current, routes):
     clean = remove_managed_artifacts(current)
-    block = managed_block(country, profile_id, domains, proxy_addr)
-    marker = "\n[[rules]]"
+    lines = [MANAGED_BEGIN, '# managed_by = v2ray-sidecar-admin-api', '']
+    tags = {}
+    for route in routes:
+        proxy = route['proxy']
+        if proxy not in tags:
+            tag = OUTBOUND_TAG if not tags else OUTBOUND_TAG + '-' + str(len(tags) + 1)
+            tags[proxy] = tag
+            lines.extend(['[[outbounds]]', 'tag = ' + json.dumps(tag),
+                          'kind = "http_connect"', 'addr = ' + json.dumps(proxy), ''])
+    # Specific suffixes win when service domains overlap.
+    rules = [(domain, route) for route in routes for domain in route['domains']]
+    seen = set()
+    for domain, route in sorted(rules, key=lambda item: -len(item[0])):
+        if domain in seen:
+            continue
+        seen.add(domain)
+        lines.extend(['# profile = ' + route['profile'], '# country = ' + route['country'],
+                      '[[rules]]', 'domain_suffix = ' + json.dumps('.' + domain),
+                      'outbound = ' + json.dumps(tags[route['proxy']]), ''])
+    lines.append(MANAGED_END)
+    block = '\n'.join(lines) + '\n'
+    marker = '\n[[rules]]'
     if marker in clean:
         idx = clean.index(marker) + 1
-        new_text = clean[:idx] + block + "\n" + clean[idx:]
-    else:
-        new_text = clean.rstrip() + "\n\n" + block
-    return new_text
+        return clean[:idx] + block + '\n' + clean[idx:]
+    return clean.rstrip() + '\n\n' + block
 
 
 def validate_route_config(text):
@@ -507,6 +545,7 @@ def current_state(exits=None):
         if match:
             state.update(container=match["container"], proxy=match["proxy"], protocol=match["protocol"])
             container = match["container"]
+    state["routes"] = saved_routes(state)
     state["gluetun"] = gluetun_status(container) if state["active"] and container else None
     transaction = route_transaction()
     state['last_transaction'] = transaction.result()
@@ -623,6 +662,10 @@ class Handler(BaseHTTPRequestHandler):
                 with MUTATION_LOCK:
                     self.handle_apply(payload)
                 return
+            if self.path == "/api/routes/delete":
+                with MUTATION_LOCK:
+                    self.handle_delete(payload)
+                return
             if self.path == "/api/streaming/test":
                 profile = str(payload.get("profile") or "")
                 country = str(payload.get("country") or "").strip()
@@ -649,6 +692,7 @@ class Handler(BaseHTTPRequestHandler):
                         country=None,
                         protocol=None,
                         domains=[],
+                        routes=[],
                         include_ip_sb=False,
                         proxy=None,
                         container=None,
@@ -664,7 +708,7 @@ class Handler(BaseHTTPRequestHandler):
             error_response(self, error.status, str(error))
             return
         except Exception as exc:
-            if self.path in ('/api/apply', '/api/clear'):
+            if self.path in ('/api/apply', '/api/clear', '/api/routes/delete'):
                 transaction = route_transaction()
                 if not getattr(exc, 'transaction_result', None):
                     transaction.fail(exc)
@@ -672,18 +716,49 @@ class Handler(BaseHTTPRequestHandler):
             return
         error_response(self, 404, "not found")
 
+    def handle_delete(self, payload):
+        profile_id = str(payload.get('profile') or '')
+        if not profile_id:
+            error_response(self, 400, 'service profile is required')
+            return
+        transaction = route_transaction()
+        with transaction.locked():
+            transaction.recover(reload_checkpoint, confirm_reload)
+            validate_route_state()
+            current = read_text(CONFIG_PATH)
+            previous = load_json(STATE_PATH, {})
+            state = delete_service_state(previous, profile_id)
+            if state is None:
+                error_response(self, 404, 'saved service route was not found; refresh the page')
+                return
+            if previous.get('config_sha256') != digest(current):
+                raise RouteError('configuration changed externally; reconcile saved routes before deleting')
+            candidate = (candidate_config(current, state['routes']) if state['routes']
+                         else remove_managed_artifacts(current))
+            state, result = transaction.execute(current, candidate, state, validate_route_config,
+                                                reload_checkpoint, confirm_reload, verify_forwarding)
+        json_response(self, 200, {'ok': True, 'state': current_state(), 'deleted_profile': profile_id,
+                                 'backup': result['backup']})
+
     def handle_apply(self, payload):
         profile_id = str(payload.get("profile") or "custom")
         country = str(payload.get("country") or "").strip()
         protocol = str(payload.get("protocol") or "udp").strip().lower()
         include_ip_sb = bool(payload.get("include_ip_sb", True))
+        if profile_id != 'custom' and profile_id not in {p['id'] for p in PROFILES}:
+            raise ValueError('choose a known service profile')
         country_names = countries()
         if not country or country not in country_names:
             raise ValueError("choose a valid NordVPN country")
-        domains = profile_domains(profile_id)
-        domains.extend(payload.get("domains") or [])
+        # Explicit domains are the complete edited list, including removals.
+        domains = payload.get('domains') if 'domains' in payload else profile_domains(profile_id)
+        if not isinstance(domains, list) or any(not isinstance(d, str) for d in domains):
+            raise ValueError('domains must be a list of strings')
+        domains = list(domains)
         if include_ip_sb:
             domains.extend(["ip.sb", "api.ip.sb"])
+        else:
+            domains = [d for d in normalize_domains(domains) if d not in ('ip.sb', 'api.ip.sb')]
         domains = normalize_domains(domains)
         if not domains:
             raise ValueError("no domains selected")
@@ -697,7 +772,9 @@ class Handler(BaseHTTPRequestHandler):
             info = gluetun["exit"]
             expected_code = next((c.get('code') for c in country_options() if c['name'] == country), None)
             exit_check = verify_exit(info, expected_code)
-            candidate = candidate_config(current, country, profile_id, domains, info['proxy'])
+            previous = load_json(STATE_PATH, {})
+            if previous.get('active') and previous.get('config_sha256') != digest(current):
+                raise RouteError('configuration changed externally; reconcile saved routes before applying')
             state = {
             "active": True,
             "profile": profile_id,
@@ -712,6 +789,9 @@ class Handler(BaseHTTPRequestHandler):
             "gluetun": gluetun.get("status", {}),
             'exit_check': exit_check,
             }
+            routes = upsert_route(saved_routes(previous), state)
+            state['routes'] = routes
+            candidate = candidate_config(current, routes)
             def postcheck():
                 verify_exit(info, expected_code)
                 verify_forwarding()

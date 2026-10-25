@@ -207,13 +207,14 @@ header{border-bottom:1px solid var(--line);background:#ffffffd9;position:sticky;
 .grid{display:grid;grid-template-columns:1fr;gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:auto}
 table{width:100%;min-width:860px;border-collapse:collapse;table-layout:auto}th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left;white-space:normal;overflow-wrap:anywhere;min-width:260px}th{color:var(--muted);font-weight:600;font-size:12px;background:#fbfcfa}tr:last-child td{border-bottom:0}.err{color:var(--bad);font-weight:650}.ok{color:var(--accent);font-weight:650}.empty{color:var(--muted);padding:12px}
 @media (max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.grid{grid-template-columns:1fr}.wrap{padding:12px}th:nth-child(4),td:nth-child(4),th:nth-child(5),td:nth-child(5){display:none}}
+.diag-card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px}.diag-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}.diag-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:16px}.diag-facts span{display:block;color:var(--muted);font-size:12px}.diag-facts strong{display:block;font-size:20px;margin-top:4px}.diag-note{font-size:12px;color:var(--muted);margin:12px 0 0}.diag-history{border-top:1px solid var(--line);margin-top:14px;padding-top:12px}.diag-history summary{cursor:pointer;font-weight:600}.diag-history li{margin:8px 0}@media(max-width:600px){.diag-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
 <header><div class="wrap"><h1>V2Ray Egress Sidecar Stats</h1><div id="meta" class="sub">Loading...</div><div class="tabs" id="tabs"></div></div></header>
 <main class="wrap">
 <section class="kpis" id="kpis"></section>
-<section><h2>V2Ray CPU Diagnostics</h2><div id="diagnostics"></div></section>
+<section><h2>V2Ray CPU 监控</h2><div id="diagnostics"></div></section>
 <section class="grid">
 <div><h2>Top Domains</h2><div class="panel" id="domains"></div></div>
 <div><h2>Top Services</h2><div class="panel" id="services"></div></div>
@@ -254,9 +255,16 @@ function render(){
  ].map(x=>`<div class="kpi"><div class="label">${x[0]}</div><div class="value">${x[1]}</div></div>`).join('');
  for(const id of ['domains','services','outbounds','udp','errors'])document.getElementById(id).innerHTML=table(w[id]);
  const d=data.diagnostics||{}, s=d.status||{}, v=s.latest_sample||{}, incident=d.incident;
- document.getElementById('diagnostics').textContent=`监测: ${d.state||'unknown'} | 当前采样 CPU: ${v.cpu_percent??'--'}% | PID: ${v.pid||'--'} | 最近事件: `+
- (incident?`${new Date(incident.timestamp*1000).toLocaleString()}，峰值 ${incident.peak_cpu_percent}%\n`+incident.findings.map(f=>f.evidence).join('\n'):'尚无超阈值事件');
- document.getElementById('diagnostics').style.whiteSpace='pre-wrap';
+ const states={watching:'监控中',unavailable:'暂无监控数据','stale heartbeat':'监控数据已过期',capturing:'正在记录事件',cooldown:'等待下一次采样'};
+ const stale=!s.updated_at||Date.now()/1000-s.updated_at>90;
+ const cpu=Number.isFinite(v.cpu_percent)?v.cpu_percent:null;
+ const threshold=s.threshold_percent??80;
+ const level=stale?'暂无最新状态':cpu===null?'暂无 CPU 数据':cpu>=threshold?'当前 CPU 偏高':'当前 CPU 未达告警阈值';
+ const time=ts=>ts?new Date(ts*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'暂无';
+ const facts=[['监控状态',states[d.state]||d.state||'暂无'],['V2Ray 当前 CPU',cpu===null?'—':cpu+'%'],['告警阈值',threshold+'%'],['进程 PID',v.pid||'—']];
+ const explanations={cpu_without_large_host_traffic:'当时整机流量低于 1 MiB/s，但 CPU 偏高。可能与循环空转、加密、垃圾回收或大量小数据包有关，尚未确认原因。',profile_needed:'目前只定位到繁忙的系统线程，尚未定位到具体 Go 函数；需要 CPU 性能分析才能进一步判断。'};
+ const findings=(incident?.findings||[]).map(f=>explanations[f.type]||f.evidence||'暂无详细结论');
+ document.getElementById('diagnostics').innerHTML=`<div class="diag-card"><div class="diag-head"><strong class="${stale?'':cpu>=threshold?'err':'ok'}">${esc(level)}</strong><span class="sub">采样时间：${esc(time(s.updated_at))}（北京时间）</span></div><div class="diag-facts">${facts.map(([k,value])=>`<div><span>${esc(k)}</span><strong>${esc(value)}</strong></div>`).join('')}</div><p class="diag-note">CPU 100% 约等于占满一个逻辑核心。当前读数为最近一次采样。</p><details class="diag-history"><summary>最近一次高 CPU 历史事件${incident?' · '+esc(time(incident.timestamp)):' · 暂无记录'}</summary>${incident?`<p>峰值 <strong>${esc(incident.peak_cpu_percent)}%</strong> · 事件进程 ${esc(incident.pid||'—')}<br><span class="sub">这是历史记录，不代表当前仍有故障。原因尚未确认。</span></p><ul>${findings.map(text=>`<li>${esc(text)}</li>`).join('')}</ul><p class="diag-note">监控未执行侵入式性能采集，也未向进程发送诊断信号。</p>`:'<p>尚未记录到高 CPU 事件。</p>'}</details></div>`;
 }
 async function load(){
  await SidecarAuth.ready();
