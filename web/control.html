@@ -161,14 +161,11 @@ function renderState(){
  $('profile').innerHTML='<option value="custom">Custom</option>'+state.profiles.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
  const current=state.state||{};
  const selectedCountry=current.country||($('country').value)||((allCountryOptions[0]||{}).name);
+ $('country-search').value='';
  renderCountryOptions(selectedCountry);
  updateCountryHint();
  if(current.profile)$('profile').value=current.profile;
- if(current.domains&&current.domains.length)putDomains(current.domains);
- else {
-   const p=profileById($('profile').value);
-   if(p)putDomains(p.domains);
- }
+ putDomains(current.domains?.length?current.domains:(profileById($('profile').value)?.domains||[]));
  $('include-ip').checked=current.include_ip_sb!==false;
  $('openvpn-tcp').checked=current.protocol==='tcp';
  renderCurrent();

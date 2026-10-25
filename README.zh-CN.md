@@ -333,6 +333,8 @@ Python 公共模块，安装位置为 `/usr/local/lib/v2ray-egress-sidecar/`。
 直到在界面上重新应用对应的 profile。
 
 分类测试：`python3 -m unittest discover -s tests -v`。
+登录和路由编辑界面回归测试：`node tests/test_auth_client.js`、
+`node tests/test_control_client.js`。
 
 ## 路由事务与失败回滚
 

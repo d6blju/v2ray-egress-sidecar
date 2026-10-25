@@ -374,6 +374,8 @@ refresh and CLI report use the new grouping. Restart only
 Existing routing rules are unchanged until you apply a profile.
 
 Run the grouping tests with `python3 -m unittest discover -s tests -v`.
+Run the authentication and route-editor client regressions with
+`node tests/test_auth_client.js` and `node tests/test_control_client.js`.
 
 ## Route Transactions And Rollback
 
