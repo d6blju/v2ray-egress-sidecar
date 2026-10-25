@@ -1,4 +1,4 @@
-# Incremental statistics and CPU diagnostics
+# Incremental statistics and resource controls
 
 The dashboard stores normalized completed-session records and JSONL byte cursors in
 SQLite (`stats.jsonl.sqlite3`, outside the web root). Each run reads at most 4 MiB
@@ -26,57 +26,43 @@ and shows the pause reason. Collection resumes at the next timer run. Defaults:
 `--max-bytes`, `--rotate-bytes`, `--retention-days` and `--database` are configurable.
 `--ignore-pressure` is only for isolated tests, never normal production rendering.
 
-`v2ray-cpu-diagnose.service` is now a persistent Python observer with a 2% CPU and
-32 MiB memory limit. Disable its old timer when upgrading. It samples process and
-thread CPU from `/proc` deltas every second, divided by actual elapsed wall time.
-PID/start-time changes reset sampling. Its heartbeat is saved every 30 seconds.
-A sample >=80% triggers a report with up to 60 seconds of history and five further
-samples, limited to one report per five minutes. Reports are root-readable only;
-the dashboard publishes the heartbeat and conclusion summary, not sockets/logs.
-The collector never restarts, signals, attaches to or reconfigures V2Ray.
+## CPU observer disabled by default
 
-The dashboard presents the current monitoring state, process CPU, alert threshold
-and PID as separate cards, with the sample time in Beijing time. The Chinese
-labels distinguish a fresh sample from a stale heartbeat. CPU 100% represents
-approximately one logical core. The latest incident is collapsed by default and
-explicitly labelled historical; expanding it shows the peak and translated
-findings without treating possible causes as a diagnosis. A historical spike is
-not evidence of a current fault. Original evidence for unrecognised finding types
-remains available in the expanded details.
+Continuous V2Ray CPU monitoring is disabled by default. The dashboard does not
+read or publish diagnostic heartbeats, current process CPU, incident history or
+findings. The continuous observer is not needed for traffic statistics, route
+management or the renderer's resource-pressure guard. That guard performs its
+bounded resource checks when the renderer runs, rather than sampling V2Ray
+processes and threads every second.
 
-Reports include instantaneous thread CPU, descriptor trend, host network rate,
-I/O wait/steal, bounded socket/process/journal output, and recent completed-domain,
-service, outbound and error groups from the database. Findings distinguish observed
-DNS failures, descriptor pressure, host contention, traffic correlation, and CPU
-without large host traffic. Correlation does not establish the busy Go function:
-encryption, GC and a busy loop need a separate CPU profile to distinguish. A leak
-requires a persistent growth trend; current snapshots cannot prove one. Live TLS
-domains and original V2Ray inbound user IDs are unavailable to this observer.
-Statistics may lag during catch-up or a pressure pause; reports include the latest
-completed-event timestamp. After each capture, archives are pruned to the last
-20 reports and archives older than three days are removed. The latest report
-remains available even if no further CPU incidents occur.
+Routine UI installation and upgrades stop and disable both the legacy
+`v2ray-cpu-diagnose.service` and `v2ray-cpu-diagnose.timer`. Existing diagnostic
+scripts, units and private reports may remain for compatibility or manual
+investigation, but are not started by the normal installer. Reports left on disk
+are historical data and are not refreshed after the observer is stopped. Keep
+them private and manage their retention separately; do not publish them to Git.
+
+## Install or upgrade
 
 ```sh
-systemctl status v2ray-cpu-diagnose.service
-cat /var/log/v2ray-cpu-diagnostics/status.json
-cat /var/log/v2ray-cpu-diagnostics/latest.txt
-# Full private evidence:
-cat /var/log/v2ray-cpu-diagnostics/latest.json
+sudo bash deploy/install-ui.sh
 ```
 
-For existing installations using `/var/lib/v2ray-rust-sidecar`, set
-`SIDECAR_STATS_DATABASE=/var/lib/v2ray-rust-sidecar/stats.jsonl.sqlite3` in the
-diagnostic service environment. The dashboard derives its DB path from `--stats`.
-Install the new modules beside `sidecar_services.py`, replace only the dashboard
-script and diagnostic service, disable the old diagnostic timer, then reload
-systemd. Keep V2Ray and Rust sidecar running throughout. Back up scripts, unit
-files and the static page before replacing them. To roll back, restore those
-files and the old timers; archives can remain because the forwarding writer uses
-the unchanged active pathname.
+Keep V2Ray and the Rust sidecar running throughout. The UI installer updates the
+statistics modules and dashboard without restarting either forwarding process.
+For existing installations using `/var/lib/v2ray-rust-sidecar`, keep the renderer's
+`--stats` argument pointed at that installation's active JSONL file. The renderer
+derives its default SQLite path from `--stats`; no diagnostic-service environment
+is needed.
 
-Validation: `python3 -m unittest discover -s tests`; Linux must also pass the
-open-inode rotation/late-writer test. Run `tests/benchmark_observability.py` on a
-helper machine to compare initial import against unchanged incremental refresh.
-Use `v2ray_cpu_watch.py --once --out /tmp/isolated-diagnostic-test --database ...`
-for a forced report without artificially loading the production V2Ray process.
+Back up scripts, unit files and the static page before a manual upgrade. To roll
+back a statistics change, restore the renderer and statistics modules and retain
+the current log pathname and SQLite database. Re-enabling the legacy CPU observer
+is not required to restore traffic statistics.
+
+## Validation
+
+Run `python3 -m unittest discover -s tests`; Linux must also pass the open-inode
+rotation/late-writer test. Run `tests/benchmark_observability.py` on a helper
+machine to compare initial import against unchanged incremental refresh. Do not
+artificially load the production V2Ray process to test statistics rendering.

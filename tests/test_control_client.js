@@ -29,10 +29,12 @@ class Element {
       this.options = [...html.matchAll(/<option value="([^"]*)"/g)].map(match => match[1]);
       this._value = this.options[0] || '';
     }
-    this.children = [...html.matchAll(/<button\b([^>]*)>/g)].map(match => {
+    this.children = [...html.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)].map(match => {
       const child = new Element('');
       child.className = (match[1].match(/class="([^"]*)"/) || [])[1] || '';
       child.dataset.profile = (match[1].match(/data-profile="([^"]*)"/) || [])[1];
+      child.dataset.enabled = (match[1].match(/data-enabled="([^"]*)"/) || [])[1];
+      child.textContent = match[2].replace(/<[^>]*>/g, '');
       return child;
     });
   }
@@ -50,7 +52,7 @@ async function client(routes) {
     if (!elements.has(id)) elements.set(id, new Element(id));
     return elements.get(id);
   };
-  let current = {active: routes.length > 0, routes: clone(routes), ...(routes.at(-1) || {})};
+  let current = {active: routes.some(saved => saved.enabled !== false), routes: clone(routes), ...(routes.at(-1) || {})};
   const fixture = () => ({ok: true, profiles: [
     {id: 'binance', name: 'Binance', domains: ['binance.com']},
     {id: 'polymarket', name: 'Polymarket', domains: ['polymarket.com']},
@@ -70,10 +72,22 @@ async function client(routes) {
       const payload = JSON.parse(options.body || '{}');
       mutations.push({path, payload});
       if (path === 'api/apply') {
-        const selected = {...payload, proxy: '127.0.0.1:18892'};
-        current = {active: true, ...selected,
-          routes: [...current.routes.filter(saved => saved.profile !== selected.profile), selected]};
+        const old = current.routes.find(saved => saved.profile === payload.profile);
+        const selected = {...payload, enabled: old?.enabled !== false, proxy: '127.0.0.1:18892'};
+        const routes = [...current.routes.filter(saved => saved.profile !== selected.profile), selected];
+        current = {...selected, active: routes.some(saved => saved.enabled !== false), routes};
         return response({ok: true, state: clone(current), exit_check: {ok: true}, ip_check: {ok: true}});
+      }
+      if (path === 'api/routes/toggle') {
+        const routes = current.routes.map(saved => saved.profile === payload.profile ? {...saved, enabled: payload.enabled} : saved);
+        current = {...current, routes, active: routes.some(saved => saved.enabled !== false)};
+        return response({ok: true, state: clone(current)});
+      }
+      if (path === 'api/routes/preview') {
+        return response({ok: true, preview: {domain: payload.domain.trim(), is_ip: false, matched: true,
+          rule: {type: 'domain_suffix', value: '.binance.com', index: 0, source: 'ui'},
+          outbound: {tag: 'nord-ui', kind: 'http_connect', proxy: '127.0.0.1:18892'},
+          outcome: 'proxy', services: ['binance'], country: 'Hong Kong'}});
       }
       assert.equal(path, 'api/routes/delete');
       const remaining = current.routes.filter(saved => saved.profile !== payload.profile);
@@ -134,5 +148,37 @@ function button(instance, kind, profile) {
   assert.equal(deleted.element('domains').value, '', 'last-service deletion clears stale editable domains');
   assert.equal(deleted.element('profile').disabled, false);
   assert.equal(deleted.element('current').querySelectorAll('.edit-route').length, 0);
-  console.log('PASS: edit prefill, cancel country-filter restoration, selected-service save, last deletion clears form');
+
+  const toggled = await client(saved);
+  const pause = button(toggled, 'toggle-route', 'binance');
+  assert.equal(pause.dataset.enabled, 'true', 'legacy routes default to enabled');
+  assert.match(pause.textContent, /暂停/);
+  await pause.onclick();
+  assert.deepEqual(toggled.mutations[0], {path: 'api/routes/toggle', payload: {profile: 'binance', enabled: false}});
+  const resume = button(toggled, 'toggle-route', 'binance');
+  assert.equal(resume.dataset.enabled, 'false');
+  assert.match(resume.textContent, /启用/);
+  assert.equal(button(toggled, 'toggle-route', 'polymarket').dataset.enabled, 'true');
+  await resume.onclick();
+  assert.deepEqual(toggled.mutations[1], {path: 'api/routes/toggle', payload: {profile: 'binance', enabled: true}});
+  assert.equal(button(toggled, 'toggle-route', 'binance').dataset.enabled, 'true');
+
+  const paused = await client([{...saved[0], enabled: false}]);
+  assert.equal(button(paused, 'toggle-route', 'binance').dataset.enabled, 'false', 'all-paused services remain visible');
+  button(paused, 'edit-route', 'binance').onclick();
+  paused.element('domains').value = 'edited.binance.com';
+  await paused.element('apply').onclick();
+  assert.equal(button(paused, 'toggle-route', 'binance').dataset.enabled, 'false', 'editing a paused route must not resume it');
+
+  const previewed = await client(saved);
+  previewed.element('preview-domain').value = 'api.binance.com';
+  if (previewed.element('preview-domain').oninput) previewed.element('preview-domain').oninput();
+  assert.equal(previewed.mutations.length, 0, 'typing a domain does not submit or modify routes');
+  await previewed.element('preview-route').onclick();
+  assert.deepEqual(previewed.mutations, [{path: 'api/routes/preview', payload: {domain: 'api.binance.com'}}]);
+  const previewOutput = previewed.element('preview-result').innerHTML + previewed.element('preview-result').textContent;
+  assert.match(previewOutput, /api\.binance\.com/);
+  assert.match(previewOutput, /nord-ui/);
+  assert.equal(button(previewed, 'toggle-route', 'binance').dataset.enabled, 'true');
+  console.log('PASS: edit/cancel/delete, isolated pause/resume, paused editing, and read-only route preview');
 })().catch(error => {console.error(error); process.exitCode = 1;});

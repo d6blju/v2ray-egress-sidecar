@@ -18,11 +18,16 @@ button{border:1px solid var(--accent);background:var(--accent);color:#fff;border
 @media(max-width:900px){.grid{grid-template-columns:1fr}.country-picker{grid-template-columns:1fr}.wrap{padding:12px}}
 @media(max-width:600px){.stream-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .route-list{white-space:normal}.saved-route{border-top:1px solid var(--line);padding:12px 0}.saved-route-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.saved-route p{margin:6px 0 0;overflow-wrap:anywhere}.saved-route .hint{line-height:1.6}.saved-route button{flex-shrink:0}
+.preview-input{display:flex;gap:8px}.preview-input input{min-width:0}.preview-input button{flex-shrink:0}.route-status{font-size:12px;font-weight:500}.route-paused{color:var(--muted)}.saved-route-head{flex-wrap:wrap}.saved-route-head .actions{margin-left:auto}
 </style>
 </head>
 <body>
 <header><div class="wrap"><h1>V2Ray Egress Sidecar Routing</h1><div id="meta" class="sub">Loading...</div><div class="nav"><a href="./">Stats</a><a class="active" href="control.html">Routing</a></div></div></header>
 <main class="wrap">
+<section class="panel route-preview" style="margin-bottom:16px">
+  <div class="row"><label for="preview-domain">域名路由预览</label><div class="preview-input"><input id="preview-domain" placeholder="例如 gamma-api.polymarket.com" spellcheck="false" autocomplete="off"><button id="preview-route" type="button" class="secondary">预览路由</button></div><div class="hint">按当前生效的 TCP 规则匹配；不查询 DNS、不发送网络探测，也不应用尚未保存的修改。</div></div>
+  <div id="preview-result" class="status" role="status">输入域名后点击预览。</div>
+</section>
 <section class="grid">
 <div class="panel">
   <div class="row"><label for="profile">Site / app profile</label><select id="profile"></select><div class="hint">每个服务单独保存，其他服务保持原有出口。同一国家和协议可共用出口。</div></div>
@@ -110,17 +115,57 @@ function updateCountryHint(){
 function renderCurrent(){
  const s=state.state||{};
  const routes=s.routes||(s.active?[s]:[]);
+ const enabled=routes.filter(r=>r.enabled!==false);
  const status=s.config_matches_state===true?'一致':s.config_matches_state===false?'配置已在外部修改':'尚未校验';
  $('current').className='status route-list';
- $('current').innerHTML=`<p>已保存 <strong>${routes.length}</strong> 个服务 · ${new Set(routes.map(r=>r.proxy)).size} 个出口</p>`+
+ $('current').innerHTML=`<p>已保存 <strong>${routes.length}</strong> 个服务 · 启用 ${enabled.length} · 暂停 ${routes.length-enabled.length} · 使用 ${new Set(enabled.map(r=>r.proxy)).size} 个出口</p>`+
  routes.map(r=>{
-  const name=profileById(r.profile)?.name||r.profile;
-  return `<div class="saved-route"><div class="saved-route-head"><strong>${esc(name)} → ${esc(countryLabel(r.country))}</strong><div class="actions"><button type="button" class="secondary edit-route" data-profile="${esc(r.profile)}" aria-label="编辑 ${esc(name)} 路由">编辑</button><button type="button" class="danger delete-route" data-profile="${esc(r.profile)}" aria-label="删除 ${esc(name)} 路由">删除</button></div></div><p class="hint">出口：${esc(r.proxy||'—')} · VPN 协议：${esc(r.protocol||'udp')}<br>域名：${esc((r.domains||[]).join(', '))}</p></div>`;
+  const name=profileById(r.profile)?.name||r.profile, active=r.enabled!==false;
+  return `<div class="saved-route"><div class="saved-route-head"><strong>${esc(name)} → ${esc(countryLabel(r.country))} <span class="route-status ${active?'ok':'route-paused'}">${active?'已启用':'已暂停'}</span></strong><div class="actions"><button type="button" class="secondary toggle-route" data-profile="${esc(r.profile)}" data-enabled="${active}" aria-label="${active?'暂停':'启用'} ${esc(name)} 路由">${active?'暂停':'启用'}</button><button type="button" class="secondary edit-route" data-profile="${esc(r.profile)}" aria-label="编辑 ${esc(name)} 路由">编辑</button><button type="button" class="danger delete-route" data-profile="${esc(r.profile)}" aria-label="删除 ${esc(name)} 路由">删除</button></div></div><p class="hint">出口：${esc(r.proxy||'—')} · VPN 协议：${esc(r.protocol||'udp')}<br>域名：${esc((r.domains||[]).join(', '))}</p></div>`;
  }).join('')+(!routes.length?'<p class="muted">尚未保存服务路由</p>':'')+
  `<p class="hint">配置校验：${esc(status)}${s.transaction_pending?' · 有待恢复的路由事务':''}${s.last_transaction?' · 最近保存：'+esc(s.last_transaction.status):''}</p>`;
+ $('current').querySelectorAll('.toggle-route').forEach(button=>button.onclick=()=>toggleRoute(button.dataset.profile,button.dataset.enabled!=='true'));
  $('current').querySelectorAll('.edit-route').forEach(button=>button.onclick=()=>editRoute(button.dataset.profile));
  $('current').querySelectorAll('.delete-route').forEach(button=>button.onclick=()=>deleteRoute(button.dataset.profile));
 }
+function updateEditHint(profile){
+ const r=(state.state.routes||[]).find(r=>r.profile===profile),name=profileById(profile)?.name||profile;
+ $('edit-hint').textContent=`正在编辑 ${name}：保存后只更新此服务的国家和完整域名列表。${r?.enabled===false?'该服务已暂停，保存后仍保持暂停。':''}`;
+}
+async function toggleRoute(profile,enabled){
+ const name=profileById(profile)?.name||profile;
+ if(!enabled&&!confirm(`确定暂停 ${name} 的路由？设置会保留；流量将按其他生效规则或默认出口处理，可能改为服务器直连。`))return;
+ const buttons=()=>document.querySelectorAll('#current button, #apply, #clear, #cancel-edit');
+ buttons().forEach(b=>b.disabled=true);
+ setResult(`正在${enabled?'启用':'暂停'} ${name} 的路由…`);
+ try{
+  const data=await fetchJson('api/routes/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile,enabled})});
+  state.state=data.state;renderCurrent();
+  if(editingProfile===profile)updateEditHint(profile);
+  setResult(enabled?`已启用 ${name}，出口已校验，其他服务保持原样。`:`已暂停 ${name}，国家和域名已保留。流量将按其他生效规则或默认出口处理。`);
+ }catch(e){
+  setResult(String(e),true);
+  try{const latest=await fetchJson('api/state');state.state=latest.state;renderCurrent();if(editingProfile)updateEditHint(editingProfile)}catch(_){}
+ }finally{buttons().forEach(b=>b.disabled=false)}
+}
+async function previewRoute(){
+ const domain=$('preview-domain').value.trim();
+ if(!domain){$('preview-result').textContent='请输入域名。';return}
+ $('preview-route').disabled=true;$('preview-result').textContent='正在匹配当前规则…';
+ try{
+  const data=await fetchJson('api/routes/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain})});
+  const p=data.preview,names=ids=>(ids||[]).map(id=>profileById(id)?.name||id).join('、');
+  const lines=[`域名：${p.domain}`,`处理方式：${p.outcome==='direct'?'服务器直连':'代理出口'}`];
+  lines.push(p.rule?`命中规则：${p.rule.type} = ${p.rule.value}（第 ${p.rule.index+1} 条，${p.rule.source==='ui'?'服务路由':'手动规则'}）`:'命中规则：无匹配规则，使用默认出口');
+  lines.push(`服务：${names(p.services)||'未归属已启用服务'}`,`国家：${p.country?countryLabel(p.country):p.outcome==='direct'?'服务器所在地（未探测）':'未知，未探测'}`,`出口：${p.outbound.tag}${p.outbound.proxy?' / '+p.outbound.proxy:''}`);
+  if(p.paused_services?.length)lines.push(`匹配的已暂停服务：${names(p.paused_services)}（不参与当前路由）`);
+  if(p.config_matches_state===false)lines.push('提示：当前配置已在外部修改，以上结果按实际配置匹配。');
+  $('preview-result').textContent=lines.join('\n');
+ }catch(e){$('preview-result').textContent='预览失败：'+String(e)}
+ finally{$('preview-route').disabled=false}
+}
+$('preview-route').onclick=previewRoute;
+$('preview-domain').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();if(!$('preview-route').disabled)previewRoute()}};
 function resetEditing(){
  editingProfile=null;$('profile').disabled=false;
  $('edit-hint').hidden=true;$('cancel-edit').hidden=true;
@@ -133,7 +178,7 @@ function editRoute(profile){
  $('profile').onchange();
  editingProfile=profile;$('profile').disabled=true;
  const name=profileById(profile)?.name||profile;
- $('edit-hint').textContent=`正在编辑 ${name}：保存后只更新此服务的国家和完整域名列表。`;
+ updateEditHint(profile);
  $('edit-hint').hidden=false;$('cancel-edit').hidden=false;
  $('apply').textContent=`保存 ${name} 的修改`;
  $('domains').scrollIntoView({behavior:'smooth',block:'center'});
@@ -295,7 +340,8 @@ $('apply').onclick=async()=>{
   const body={profile:editingProfile||$('profile').value,country:$('country').value,domains:domainsFromText(),include_ip_sb:$('include-ip').checked,protocol:$('openvpn-tcp').checked?'tcp':'udp'};
   const data=await fetchJson('api/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   state.state=data.state; resetEditing();renderState();
-  setResult(`Applied (hot reload confirmed).\ncountry: ${countryLabel(data.state.country)}\ncontainer: ${data.state.container}\nexit reused: ${data.exit_reused?'yes':'no'}\n出口验证: ${formatIp(data.exit_check)}\nip.sb 路由检测: ${formatIp(data.ip_check)}\nbackup: ${data.backup}`);
+  if(data.state.enabled===false)setResult('已保存此服务的修改，仍保持暂停；其他服务保持原样。');
+  else setResult(`Applied (hot reload confirmed).\ncountry: ${countryLabel(data.state.country)}\ncontainer: ${data.state.container}\nexit reused: ${data.exit_reused?'yes':'no'}\n出口验证: ${formatIp(data.exit_check)}\nip.sb 路由检测: ${formatIp(data.ip_check)}\nbackup: ${data.backup}`);
  }catch(e){setResult(String(e),true);try{const latest=await fetchJson('api/state');state.state=latest.state;renderCurrent()}catch(_){}}
  finally{$('apply').disabled=false;document.querySelectorAll('#current button, #clear, #cancel-edit').forEach(b=>b.disabled=false)}
 };

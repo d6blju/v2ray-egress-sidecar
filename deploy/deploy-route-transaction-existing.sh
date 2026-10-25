@@ -12,7 +12,7 @@ install -d -m 0700 "$backup"
 printf '%s\n' "$before" > "$backup/forwarding-pids.txt"
 printf '%s\n' "$hashes" > "$backup/config-sha256.txt"
 paths=(usr/local/bin/v2ray-sidecar-admin-api var/www/v2ray-sidecar-dashboard/control.html)
-for path in usr/local/lib/v2ray-egress-sidecar/sidecar_route_transaction.py usr/local/bin/v2ray-egress-config-check; do
+for path in usr/local/lib/v2ray-egress-sidecar/sidecar_route_preview.py usr/local/lib/v2ray-egress-sidecar/sidecar_route_transaction.py usr/local/bin/v2ray-egress-config-check; do
     [[ ! -f "/$path" ]] || paths+=("$path")
 done
 dropin=etc/systemd/system/v2ray-sidecar-admin-api.service.d/route-transactions.conf
@@ -34,11 +34,12 @@ trap rollback ERR
 systemctl stop v2ray-sidecar-admin-api.service
 install -m 0755 "$checker" /usr/local/bin/v2ray-egress-config-check
 install -m 0644 "$stage/deploy/sidecar_route_transaction.py" /usr/local/lib/v2ray-egress-sidecar/sidecar_route_transaction.py
+install -m 0644 "$stage/deploy/sidecar_route_preview.py" /usr/local/lib/v2ray-egress-sidecar/sidecar_route_preview.py
 install -m 0755 "$stage/deploy/v2ray-egress-admin-api.py" /usr/local/bin/v2ray-sidecar-admin-api
 install -m 0644 "$stage/web/control.html" /var/www/v2ray-sidecar-dashboard/control.html
 install -d /etc/systemd/system/v2ray-sidecar-admin-api.service.d
 install -m 0644 "$stage/systemd/v2ray-route-transaction-legacy.conf" "/$dropin"
-python3 -m py_compile /usr/local/bin/v2ray-sidecar-admin-api /usr/local/lib/v2ray-egress-sidecar/sidecar_route_transaction.py
+python3 -m py_compile /usr/local/lib/v2ray-egress-sidecar/sidecar_route_preview.py /usr/local/bin/v2ray-sidecar-admin-api /usr/local/lib/v2ray-egress-sidecar/sidecar_route_transaction.py
 systemctl daemon-reload
 systemctl start v2ray-sidecar-admin-api.service
 ready=0

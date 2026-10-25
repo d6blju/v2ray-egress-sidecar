@@ -315,6 +315,20 @@ Using the routing control page:
    `取消编辑` cancels the form changes without saving.
 7. Use `删除` (delete) beside a saved service to remove only its route. Use
    `清空全部服务路由` to remove all UI-managed routes. Manual rules are preserved.
+8. Use a saved service's pause/enable control to remove or restore only its
+   active rules while retaining its country and domains. Editing a paused
+   service keeps it paused; enabling it validates the selected exit before
+   applying the route. A shared exit remains available to other services.
+9. Enter a hostname in the domain route preview to inspect the current forwarding
+   configuration. It shows the matched UI or manual rule, or the default/direct
+   outbound when no rule matches. Country is displayed only when known. Paused
+   saved profiles appear as hints rather than active matches.
+
+Pausing is not a traffic block: new connections fall through to remaining manual
+rules or the default outbound, which may be direct. If every service is paused,
+all saved settings remain available for later enabling. The preview performs no
+DNS lookup or target-site request and adds no background polling; it is a rule
+lookup, not an exit-health or connectivity test.
 
 `Custom` is one saved profile, not an additional unnamed route on every save.
 An exact domain already owned by another saved service is rejected. Overlapping
@@ -398,52 +412,41 @@ configuration validation without opening a listener. Older servers can install
 it as a separate checker without replacing their running Rust binary.
 See [transaction behavior, recovery, upgrade settings and tests](docs/route-transactions.md).
 
-## Incremental Statistics And CPU Diagnostics
+## Incremental Statistics And Resource Limits
 
-The dashboard now imports only appended JSONL records into SQLite, retains 24-hour
+The dashboard imports only appended JSONL records into SQLite, retains 24-hour
 statistics, rotates consumed logs at 64 MiB, and pauses under host resource pressure.
-A lightweight continuous observer captures real V2Ray CPU spikes and generates
-private evidence reports plus a dashboard summary. It never restarts V2Ray.
+Continuous V2Ray CPU monitoring is disabled by default. The dashboard has no CPU
+sampling cards, incident history or diagnostic panel.
 
 | Component | Default behavior |
 | --- | --- |
-| Dashboard | Refresh every 60 seconds; read up to 4 MiB of new logs per run |
-| Resource limits | Renderer: 5% of one CPU / 256 MiB; observer: 2% / 32 MiB |
+| Statistics renderer | Generate data every 60 seconds; read up to 4 MiB of new logs per run |
+| Renderer resource limits | 5% of one CPU / 256 MiB; low scheduling priority |
 | Statistics | Last 24 hours, grouped by domain, service, outbound and protocol |
 | Rotation | Rename consumed logs at 64 MiB; delete consumed archives after three days |
 | Pressure guard | Pause at CPU >=80%, available memory <20%, or >=2048 established host TCP sockets |
-| CPU incidents | Sample every second; >=80% triggers history plus five further samples; five-minute cooldown |
-| Reports | On capture, keep up to 20 archives and prune those older than three days; retain the latest report and publish only its summary |
+| CPU diagnostic observer | Disabled; no continuous process/thread sampling or automatic reports |
 
-From the repository root, install or upgrade the UI and observer with:
+From the repository root, install or upgrade the UI with:
 
 ```bash
 sudo bash deploy/install-ui.sh
-sudo systemctl restart v2ray-cpu-diagnose.service
-sudo systemctl status v2ray-cpu-diagnose.service
-sudo cat /var/log/v2ray-cpu-diagnostics/status.json
-sudo cat /var/log/v2ray-cpu-diagnostics/latest.txt
 ```
 
-`latest.txt` and `latest.json` appear after the first CPU incident. `status.json`
-shows the observer heartbeat and latest CPU sample even when no incident occurred.
-The dashboard's CPU section separates current monitoring state, CPU percentage,
-threshold and PID from a collapsed historical incident. Labels and explanations
-are in Chinese and timestamps use Beijing time. A historical CPU peak is not a
-current fault; 100% CPU is approximately one logical core. An expired heartbeat
-is shown as stale rather than presenting the old sample as current.
+The installer stops and disables the legacy `v2ray-cpu-diagnose.service` and
+`v2ray-cpu-diagnose.timer` on existing installations. It does not restart V2Ray/Xray
+or the Rust forwarding service. Legacy diagnostic scripts and historical reports
+may remain on disk; their presence does not mean the observer is running. Do not
+start that observer as part of a routine UI upgrade.
+
 Initial import may take several batches; the page shows `catching up` and backlog
 bytes until it finishes. Pressure pauses preserve the last successful statistics.
-The installer disables the old diagnostic timer. Restart only the observer to load
-an upgrade; V2Ray/Xray and the Rust forwarding service do not need restarting.
-
-Reports distinguish measured evidence from hypotheses. CPU without large host
-traffic can suggest several causes; identifying the exact Go function still needs
-a CPU profile. Completed-session domain counters cannot identify all active TLS
-connections or prove a connection leak from a single snapshot.
-See [deployment, limits, diagnosis and rollback](docs/observability.md), including
-the alternate paths used by older installations. Do not commit the database,
-raw logs, incident reports, credentials or local server configuration.
+The pressure guard samples resource availability only during a renderer run and
+does not require the continuous diagnostic observer.
+See [incremental collection, resource controls and upgrades](docs/observability.md),
+including the alternate paths used by older installations. Do not commit the
+database, raw logs, old incident reports, credentials or local server configuration.
 
 ## Streaming Checks And Exit Reuse
 

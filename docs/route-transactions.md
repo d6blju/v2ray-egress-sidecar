@@ -1,6 +1,6 @@
 # Route transactions and recovery
 
-Saving, deleting one saved service and clearing all saved services use the same
+Saving, pausing/enabling, deleting one saved service and clearing all saved services use the same
 persistent transaction. Manual rules and unrelated outbounds remain outside the
 UI-managed block. An apply performs:
 
@@ -64,7 +64,7 @@ another profile adds a route; saving an existing profile replaces only that
 profile. `Custom` is one such profile, so repeated custom saves update the same
 slot.
 
-The control page lists every saved service with Edit and Delete buttons. Edit
+The control page lists every saved service with Edit, Delete and pause/enable controls. Edit
 backfills the saved country, protocol and domains and locks the profile selector
 until save or cancel. A supplied domain list is authoritative: domains removed
 from the form are not restored from the preset. A request that omits `domains`
@@ -73,11 +73,28 @@ uses the profile's defaults. Empty domain lists are rejected unless the separate
 and overlapping suffixes on different exits, are rejected without modifying that
 other profile.
 
+Each saved service also retains its enabled/paused state. A paused service keeps
+its profile, country, protocol and domains but contributes no active managed
+rules or outbound. Editing its settings does not enable it. Enabling validates
+or prepares its selected exit and applies the normal verified transaction. When
+all services are paused, the saved route list is retained even though there are
+no active UI-managed rules.
+
+Pause removes a route, not traffic: new connections can match a remaining manual
+rule or the default outbound, including direct forwarding. It is not a blocking
+or fail-closed feature. Other enabled services keep their rules and any shared
+exit. Already established connections retain their original selection, as with
+other route transactions.
+
 Services using the same country and VPN protocol can reuse one container and
 proxy. The candidate configuration emits one outbound per distinct saved proxy,
 with service domain rules referring to it. More specific suffixes are ordered
 before broader suffixes. All referenced ports remain protected from container
 cleanup, including the ports needed for transaction rollback.
+
+Only enabled service routes contribute references to the candidate configuration.
+A paused service does not require its cached container to remain running; the
+normal exit validation/reuse logic applies when it is enabled again.
 
 `POST /api/routes/delete` takes a saved `profile` and deletes only that entry.
 It requires the same authenticated session and CSRF token as Apply. Missing
@@ -86,6 +103,23 @@ last service leaves no UI-managed rules. Delete does not stop a shared exit or
 remove manual rules. Clear removes every UI-managed service route. Both use
 validation, atomic publication, hot-reload acknowledgement and rollback rather
 than editing only the state file.
+
+## Domain route preview
+
+The domain preview reads the current forwarding configuration rather than the
+unsaved form or just the saved service catalog. It evaluates the configured
+matching rules and returns the matched UI-managed or manual rule and outbound.
+If no rule matches, it reports the configured default outbound, identifying
+direct forwarding when applicable. Country is returned only when known from exit
+metadata; an unknown manual or default exit is not assigned a
+guessed country.
+
+Paused saved profiles whose domains cover the query are separate hints, never
+reported as active rules. The preview is read-only and runs on request: it adds
+no background polling, performs no DNS resolution, and sends no probe to the
+queried site. It therefore does not establish the exit IP, health, geographic
+eligibility or application-level access. A subsequent route change can alter the
+result; use the current preview after saving a change.
 
 ## Install or upgrade
 
